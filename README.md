@@ -32,14 +32,39 @@ uv run uvicorn fulfill.main:app --reload
 `GET /health`는 프로세스 생존만 확인하며 DB에 접속하지 않습니다. DB 사용 가능 여부는 별개의
 사실이므로 통합 테스트에서 따로 검증합니다.
 
+## 데모 데이터와 요청 접수
+
+판매사 온보딩과 품목 등록은 아직 구현되지 않았습니다. 가상 판매사·SKU를 넣어 API를 바로
+확인할 수 있습니다. 여러 번 실행해도 안전합니다.
+
+```bash
+uv run python -m scripts.seed_demo   # SELLER-A/B 와 굿즈 SKU 4종
+```
+
+```bash
+curl -X POST localhost:8000/fulfillment-requests -H 'Content-Type: application/json' -d '{
+  "sellerCode": "SELLER-A",
+  "externalRequestId": "OMS-0001",
+  "lines": [{"skuCode": "ACR-STAND", "quantity": 3}],
+  "recipient": {"name": "가상 수취인", "address": "서울시 가상구 101", "phone": "010-0000-0000"},
+  "initialDueAt": "2026-11-05T09:00:00+09:00",
+  "occurredAt": "2026-10-28T10:00:00+09:00"
+}'
+```
+
+같은 `externalRequestId`로 같은 내용을 다시 보내면 `200 UNCHANGED`와 **같은 요청 id**가
+돌아옵니다. 내용이 다르면 `409 CONFLICT`입니다. 라인 순서·공백·시간대 표기 차이는 같은
+내용으로 봅니다.
+
 ## 검증
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
+uv run lint-imports
 uv run pytest                 # 통합 테스트 포함, Docker 필요
-uv run pytest -m "not integration"   # Docker 없이 단위 테스트만
+uv run pytest -m "not integration and not concurrency"   # Docker 없이 단위 테스트만
 ```
 
 데이터베이스 URL은 `DATABASE_URL` 환경변수로 덮어쓸 수 있습니다. 설정하지 않으면

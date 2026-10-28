@@ -1,1 +1,1 @@
-"""Small cross-cutting pieces (settings, DB engine). Business models do not belong here."""
+"""설정·DB 엔진 등 작은 횡단 요소. 업무 모델은 여기 두지 않는다."""

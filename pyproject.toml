@@ -22,6 +22,7 @@ dev = [
     # installed the TestClient base class stays unresolved and pyright strict
     # reports its inherited members as unknown, so httpx2 is the typed path.
     "httpx2>=2.16.0",
+    "import-linter>=2.15",
     "pyright[nodejs]>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.17.3",
@@ -31,13 +32,13 @@ dev = [
 [tool.ruff]
 target-version = "py313"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
 venvPath = "."
@@ -48,4 +49,5 @@ testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
 markers = [
     "integration: needs Docker (Testcontainers PostgreSQL)",
+    "concurrency: needs Docker, runs competing transactions on real PostgreSQL",
 ]

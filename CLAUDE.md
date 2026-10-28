@@ -81,6 +81,7 @@
 - 새 파일이든 기존 파일이든 **한 번에 전체를 쓰지 않습니다.** 섹션·클래스·함수·테스트 케이스 묶음 같은 의미 단위로 나눠 편집합니다. 새 파일은 뼈대(모듈 docstring·import·첫 단위)로 만들고 이후 단위를 이어 붙입니다.
 - 각 편집 직전에 **"지금 어느 부분을 어떻게 편집 중인지"**를 알립니다. 예: "`allocation/domain.py`에 `DemandSegment` 값 객체를 추가합니다 — 증량 구간을 별도 FIFO 순번으로 표현하기 위해서입니다."
 - 단위는 diff만 보고도 의도를 파악할 수 있는 크기로 합니다. 진행 순서가 보이도록 필요하면 `n/전체` 번호를 붙입니다.
+- **한 번의 편집은 함수 하나·클래스 하나·테스트 케이스 하나 수준으로 작게 유지합니다.** 개발자가 생성된 코드에 집중해 읽을 수 있어야 합니다. 여러 함수를 한 번에 쓰지 않고, 파일 하나를 여러 번에 걸쳐 만듭니다.
 - import 정리·포맷·이름 변경처럼 기계적인 수정은 하나로 묶습니다.
 - 명령이 생성하는 파일(`uv.lock`, `alembic revision --autogenerate` 결과, 도구 초기화 산출물)은 예외입니다. 생성 후 핵심 내용을 설명하고, 생성본을 손으로 고칠 때는 다시 의미 단위로 편집합니다.
 
@@ -137,6 +138,7 @@
 ## 9. 응답 언어와 보고 형식
 
 - 항상 **한국어 존댓말**로 답합니다. 코드 식별자와 기술 용어는 필요하면 영어를 씁니다.
+- **코드 주석과 docstring도 한국어로 작성합니다.** 식별자·타입·라이브러리 이름·설정 키는 영어를 유지합니다. Alembic 생성 템플릿(`alembic/script.py.mako`)도 한국어로 두어 생성되는 마이그레이션이 한국어가 되게 합니다.
 - 확인된 사실, 가정, 권장 사항을 구분합니다.
 - 사전 보고: `목표 / 분석 / 계획 / 결정 사항 / 검증 계획 / 승인 요청`
 - 편집 직전: `대상(어느 부분) / 내용(어떻게) / 이유 / 학습 포인트` — 4.1의 의미 단위마다
@@ -163,8 +165,10 @@
 | `uv run ruff check .` | lint |
 | `uv run ruff format --check .` | 포맷 검사 |
 | `uv run pyright` | 타입 검사 (strict) |
+| `uv run lint-imports` | 모듈 경계 검사 (import-linter) |
 | `uv run pytest` | 전체 테스트 — 통합 포함, Docker 필요 |
-| `uv run pytest -m "not integration"` | 단위 테스트만 — Docker 불필요 |
+| `uv run pytest -m "not integration and not concurrency"` | 단위 테스트만 — Docker 불필요 |
+| `uv run python -m scripts.seed_demo` | 가상 판매사·SKU 시드 — 재실행 가능 |
 | `uv run alembic revision -m "<message>"` | 새 migration 생성 |
 | `uv run alembic upgrade head` | 스키마를 head로 적용 |
 | `docker compose up -d --wait` | 로컬 PostgreSQL 18.6, healthy까지 대기 |

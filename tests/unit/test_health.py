@@ -1,4 +1,4 @@
-"""24-0 gate: the app starts and answers the liveness probe."""
+"""앱이 기동하고 liveness 응답을 주는지 확인한다(24-0 관문)."""
 
 from fastapi.testclient import TestClient
 
