@@ -1,5 +1,5 @@
-# Local development database. SIMULATION data only — never real recipient data (R-08).
-# Credentials match the Settings.database_url default, so `uv run` needs no extra env.
+# 로컬 개발용 데이터베이스. SIMULATION 데이터만 쓰며 실제 수취인 정보는 절대 넣지 않는다(R-08).
+# 계정 정보가 Settings.database_url 기본값과 같아서 `uv run`에 추가 환경변수가 필요 없다.
 services:
   db:
     image: postgres:18.6
@@ -10,11 +10,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # PostgreSQL 18 images declare the volume at /var/lib/postgresql and put
-      # PGDATA in /var/lib/postgresql/18/docker, unlike /var/lib/postgresql/data on 17 and older.
+      # PostgreSQL 18 이미지는 볼륨을 /var/lib/postgresql에 선언하고 PGDATA를
+      # /var/lib/postgresql/18/docker에 둔다. 17 이하의 /var/lib/postgresql/data와 다르다.
       - pgdata:/var/lib/postgresql
     healthcheck:
-      # Container started is not the same fact as accepting connections.
+      # 컨테이너가 떴다는 것과 접속을 받는다는 것은 다른 사실이다.
       test: ["CMD-SHELL", "pg_isready -U fulfill -d fulfill"]
       interval: 5s
       timeout: 3s

@@ -1,0 +1,76 @@
+# 설계한 모듈 경계를 기계가 강제한다. 손으로 확인하면 다음 사람이 모르고 넘는다.
+[importlinter]
+root_packages =
+    fulfill
+# fastapi·sqlalchemy를 금지 대상으로 지정하려면 외부 패키지도 그래프에 들어와야 한다.
+include_external_packages = True
+
+[importlinter:contract:domain-purity]
+name = domain 계층은 웹 프레임워크와 DB에 의존하지 않는다
+type = forbidden
+source_modules =
+    fulfill.modules.requests.domain
+forbidden_modules =
+    fastapi
+    sqlalchemy
+
+# 간접 경로는 정당하다. requests.api → workflows → inventory.queries →
+# inventory.models는 공개 입구를 거친 흐름이다. 금지하려는 것은 다른 모듈의 ORM을
+# 건너뛰어 직접 보는 것이므로 직접 참조만 본다.
+[importlinter:contract:seller-contracts-foreign-orm]
+name = seller_contracts는 다른 모듈의 ORM을 직접 보지 않는다
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    fulfill.modules.seller_contracts
+forbidden_modules =
+    fulfill.modules.allocation.models
+    fulfill.modules.inventory.models
+    fulfill.modules.requests.models
+
+[importlinter:contract:inventory-foreign-orm]
+name = inventory는 다른 모듈의 ORM을 직접 보지 않는다
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    fulfill.modules.inventory
+forbidden_modules =
+    fulfill.modules.allocation.models
+    fulfill.modules.requests.models
+    fulfill.modules.seller_contracts.models
+
+[importlinter:contract:requests-foreign-orm]
+name = requests는 다른 모듈의 ORM을 직접 보지 않는다
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    fulfill.modules.requests
+forbidden_modules =
+    fulfill.modules.allocation.models
+    fulfill.modules.inventory.models
+    fulfill.modules.seller_contracts.models
+
+[importlinter:contract:allocation-foreign-orm]
+name = allocation은 다른 모듈의 ORM을 직접 보지 않는다
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    fulfill.modules.allocation
+forbidden_modules =
+    fulfill.modules.inventory.models
+    fulfill.modules.requests.models
+    fulfill.modules.seller_contracts.models
+
+# 조정 계층은 모듈이 공개한 입구(queries·guard·repository)만 쓴다. 스키마 조합
+# 지점인 fulfill.metadata는 모든 모델을 모아야 하므로 이 계약의 대상이 아니다.
+[importlinter:contract:workflows-no-orm]
+name = workflows는 어느 모듈의 ORM도 직접 보지 않는다
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    fulfill.workflows
+forbidden_modules =
+    fulfill.modules.allocation.models
+    fulfill.modules.inventory.models
+    fulfill.modules.requests.models
+    fulfill.modules.seller_contracts.models
