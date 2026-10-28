@@ -1,0 +1,24 @@
+# Local development database. SIMULATION data only — never real recipient data (R-08).
+# Credentials match the Settings.database_url default, so `uv run` needs no extra env.
+services:
+  db:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: fulfill
+      POSTGRES_PASSWORD: fulfill
+      POSTGRES_DB: fulfill
+    ports:
+      - "5432:5432"
+    volumes:
+      # PostgreSQL 18 images declare the volume at /var/lib/postgresql and put
+      # PGDATA in /var/lib/postgresql/18/docker, unlike /var/lib/postgresql/data on 17 and older.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # Container started is not the same fact as accepting connections.
+      test: ["CMD-SHELL", "pg_isready -U fulfill -d fulfill"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
