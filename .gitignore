@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.pyright/
+.coverage
+htmlcov/
+
+# Local secrets and personal settings
+.env
+.claude/settings.local.json
