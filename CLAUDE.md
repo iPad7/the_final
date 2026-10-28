@@ -1,6 +1,6 @@
 # THE FINAL — Claude Code Project Instructions
 
-> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-0 골격 진행 중**(의존성·도구 설정까지, 실행 골격·테스트·CI 미완).
+> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-0 골격 완료**(CI 통과 확인). 다음은 24-1 요청 접수·멱등.
 > 이 파일은 Claude Code의 **작업 방식**을 정의합니다. 업무 규칙·요구사항·아키텍처 상세는 Notion 원본을 따르며 여기에 복제하지 않습니다.
 
 ## 1. 프로젝트 목적
@@ -113,7 +113,7 @@
 
 ## 7. 단계 규칙
 
-- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0이 진행 중**입니다. 24-0 산출물(main/health, compose, Alembic, tests, CI 등)이 아직 없는 것은 결함이 아니라 미완 상태입니다.
+- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0은 완료**입니다(FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과). 다음 작업은 24-1입니다.
   - 24-0 골격(uv, FastAPI health, PostgreSQL, Alembic, pytest+Testcontainers, CI)
   - 24-1 요청 접수·멱등 (AC-01/02)
   - 24-2 입고·QC (AC-06~08)
@@ -171,9 +171,7 @@
 | `uv run uvicorn fulfill.main:app` | 앱 실행 — `/health`가 200 `{"status":"ok"}` 응답 |
 | `uv sync --locked` | lockfile 정합성 확인 (CI와 동일) |
 
-아직 실행해 확인하지 않은 것:
-
-- GitHub Actions CI — 원격 저장소가 없어 미실행
+GitHub Actions CI는 push와 PR에서 실행됩니다. 2026-10-28 `main`에서 success를 확인했고 Ruff lint·format, Pyright, Pytest(통합 테스트 포함) 스텝이 모두 통과했습니다.
 
 ## 11. Git·PR 규약
 
