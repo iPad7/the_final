@@ -67,7 +67,6 @@ class ReceiptCommand:
     seller_code: str | None = None
     sku_code: str | None = None
     advice_id: uuid.UUID | None = None
-    location_code: str | None = None
 
 
 def validate_receipt(command: ReceiptCommand) -> tuple[ValidationProblem, ...]:
@@ -80,6 +79,10 @@ def validate_receipt(command: ReceiptCommand) -> tuple[ValidationProblem, ...]:
 
     판매사와 품목은 둘 다 있거나 둘 다 없어야 한다. SKU가 판매사에 종속되므로
     품목만 아는 상태는 성립하지 않고, DB도 같은 규칙을 제약으로 막는다.
+
+    위치를 받지 않는다. 입고 시점에 피킹 위치는 아직 확정되지 않았고, AC-09가
+    "임시 구역 입고 자체를 피킹 위치 확인 완료로 간주하지 않는다"고 요구한다.
+    위치 확인은 별도 작업이므로 버킷은 위치 NULL로 만들어진다.
     """
     problems: list[ValidationProblem] = []
 
@@ -99,12 +102,6 @@ def validate_receipt(command: ReceiptCommand) -> tuple[ValidationProblem, ...]:
     elif len(confirmed_by) > MAX_CONFIRMED_BY_LENGTH:
         problems.append(
             ValidationProblem("confirmed_by", f"{MAX_CONFIRMED_BY_LENGTH}자를 넘습니다")
-        )
-
-    location_code = normalize_text(command.location_code or "")
-    if len(location_code) > MAX_LOCATION_CODE_LENGTH:
-        problems.append(
-            ValidationProblem("location_code", f"{MAX_LOCATION_CODE_LENGTH}자를 넘습니다")
         )
 
     if command.arrived_at.tzinfo is None:
