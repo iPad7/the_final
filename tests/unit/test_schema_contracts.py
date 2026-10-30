@@ -12,13 +12,31 @@ from sqlalchemy.sql.expression import FromClause
 
 import fulfill.modules
 from fulfill.metadata import REGISTERED_MODEL_MODULES
-from fulfill.modules.inventory.models import Sku
+from fulfill.modules.inventory.domain import (
+    MAX_CONFIRMED_BY_LENGTH,
+    MAX_DECIDED_BY_LENGTH,
+    MAX_LOCATION_CODE_LENGTH,
+    MAX_REVIEWED_BY_LENGTH,
+)
+from fulfill.modules.inventory.models import (
+    ENVIRONMENT_SIMULATION as INVENTORY_ENVIRONMENT_SIMULATION,
+)
+from fulfill.modules.inventory.models import (
+    OwnershipReview,
+    QcDecision,
+    Receipt,
+    Sku,
+    StockPosition,
+)
 from fulfill.modules.requests.domain import (
     MAX_EXTERNAL_REQUEST_ID_LENGTH,
     MAX_RECIPIENT_NAME_LENGTH,
     MAX_RECIPIENT_PHONE_LENGTH,
     MAX_SELLER_CODE_LENGTH,
     MAX_SKU_CODE_LENGTH,
+)
+from fulfill.modules.requests.models import (
+    ENVIRONMENT_SIMULATION as REQUESTS_ENVIRONMENT_SIMULATION,
 )
 from fulfill.modules.requests.models import FulfillmentRequest
 from fulfill.modules.seller_contracts.models import Seller
@@ -47,6 +65,20 @@ def test_도메인_길이_상한이_컬럼_길이와_일치한다() -> None:
     )
     assert _varchar_length(Seller.__table__, "code") == MAX_SELLER_CODE_LENGTH
     assert _varchar_length(Sku.__table__, "code") == MAX_SKU_CODE_LENGTH
+
+
+def test_입고_도메인_길이_상한이_컬럼_길이와_일치한다() -> None:
+    # inventory.domain도 SQLAlchemy를 import할 수 없어 같은 값을 따로 들고 있다.
+    assert _varchar_length(Receipt.__table__, "confirmed_by") == MAX_CONFIRMED_BY_LENGTH
+    assert _varchar_length(QcDecision.__table__, "decided_by") == MAX_DECIDED_BY_LENGTH
+    assert _varchar_length(OwnershipReview.__table__, "reviewed_by") == MAX_REVIEWED_BY_LENGTH
+    assert _varchar_length(StockPosition.__table__, "location_code") == MAX_LOCATION_CODE_LENGTH
+
+
+def test_환경_구분_값이_모듈_사이에서_일치한다() -> None:
+    # 모듈 간 ORM import가 금지돼 두 모듈이 같은 문자열을 따로 정의한다. 어긋나면
+    # 한쪽 테이블만 SIMULATION을 허용하게 되어 ADR23-08의 강제가 반쪽이 된다.
+    assert INVENTORY_ENVIRONMENT_SIMULATION == REQUESTS_ENVIRONMENT_SIMULATION
 
 
 def test_모든_모듈의_models가_metadata에_등록돼_있다() -> None:

@@ -9,10 +9,12 @@ include_external_packages = True
 name = domain 계층은 웹 프레임워크와 DB에 의존하지 않는다
 type = forbidden
 source_modules =
+    fulfill.modules.inventory.domain
     fulfill.modules.requests.domain
 forbidden_modules =
     fastapi
     sqlalchemy
+    pydantic
 
 # 간접 경로는 정당하다. requests.api → workflows → inventory.queries →
 # inventory.models는 공개 입구를 거친 흐름이다. 금지하려는 것은 다른 모듈의 ORM을

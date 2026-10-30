@@ -16,6 +16,7 @@ from fulfill.modules.inventory.domain import (
     QC_STATE_FAILED,
     QC_STATE_PASSED,
     QC_STATE_PENDING,
+    AdviceCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
@@ -31,6 +32,7 @@ from fulfill.shared.http import to_camel_path
 from fulfill.workflows.receiving import (
     ReceivingOutcome,
     ReceivingResult,
+    record_inbound_advice,
     record_qc_decision,
     record_receipt,
     review_ownership,
@@ -66,6 +68,7 @@ class ReceivingResponse(_Payload):
 
     outcome: ReceivingOutcome
     receipt_id: uuid.UUID | None = None
+    advice_id: uuid.UUID | None = None
     problems: list[ProblemPayload] = []
 
 
@@ -74,6 +77,7 @@ def _to_response(result: ReceivingResult) -> ReceivingResponse:
     return ReceivingResponse(
         outcome=result.outcome,
         receipt_id=result.receipt_id,
+        advice_id=result.advice_id,
         problems=[
             ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
             for problem in result.problems
@@ -87,6 +91,41 @@ router = APIRouter(tags=["receiving"])
 # 유지한다. 본문은 camelCase인데 경로만 snake_case면 쓰는 쪽이 매번 확인해야 한다.
 ReceiptId = Annotated[uuid.UUID, Path(alias="receiptId")]
 AdviceId = Annotated[uuid.UUID, Path(alias="adviceId")]
+
+
+class AdvicePayload(_Payload):
+    """판매사가 보내는 입고 예정 통보.
+
+    판매사·품목이 필수인 점이 실도착과 다르다. 통보를 보낸 쪽이 누구인지는 늘
+    알려져 있다.
+    """
+
+    seller_code: str
+    sku_code: str
+    expected_quantity: int
+    advised_at: datetime
+
+
+@router.post("/inbound-advices")
+def accept_inbound_advice(payload: AdvicePayload, response: Response) -> ReceivingResponse:
+    """입고 예정을 접수한다 (AC-06).
+
+    재고 버킷을 만들지 않는다. 예정량을 물리 정상 재고로 취급하지 않는다는
+    AC-06의 요구가 이 사실로 성립한다.
+    """
+    with unit_of_work() as session:
+        result = record_inbound_advice(
+            session,
+            AdviceCommand(
+                seller_code=payload.seller_code,
+                sku_code=payload.sku_code,
+                expected_quantity=payload.expected_quantity,
+                advised_at=payload.advised_at,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_OUTCOME[result.outcome]
+    return _to_response(result)
 
 
 class ReceiptPayload(_Payload):

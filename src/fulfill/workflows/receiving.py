@@ -15,9 +15,11 @@ from sqlalchemy.orm import Session
 
 from fulfill.modules.inventory.domain import (
     REVIEW_CONFIRMED,
+    AdviceCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
+    validate_advice,
     validate_ownership_review,
     validate_qc_decision,
     validate_receipt,
@@ -30,6 +32,7 @@ from fulfill.modules.inventory.repository import (
     NewOwnershipReview,
     NewReceipt,
     apply_qc_decision,
+    insert_advice,
     insert_receipt,
     lock_ownership_status,
     lock_pending_quantity,
@@ -59,7 +62,10 @@ class ReceivingResult:
     """판정 결과와 그 근거."""
 
     outcome: ReceivingOutcome
+    # 명령에 따라 둘 중 하나만 채워진다. 예정 통보는 advice_id, 실도착·검수·귀속
+    # 확인은 receipt_id다.
     receipt_id: uuid.UUID | None = None
+    advice_id: uuid.UUID | None = None
     problems: tuple[ValidationProblem, ...] = ()
 
 
@@ -93,6 +99,28 @@ def _resolve_attribution(
         return _rejected("sku_code", "이 판매사에 등록되지 않은 SKU입니다")
 
     return seller_id, sku_id
+
+
+def record_inbound_advice(session: Session, command: AdviceCommand) -> ReceivingResult:
+    """입고 예정 통보를 접수한다 (AC-06).
+
+    예정량은 약속이지 재고가 아니다. 이 명령은 재고 버킷을 만들지 않으며, 그것이
+    AC-06의 "예정량 600개를 물리 정상 재고로 취급하지 않는다"를 보장한다.
+    """
+    problems = validate_advice(command)
+    if problems:
+        return ReceivingResult(ReceivingOutcome.REJECTED, problems=problems)
+
+    resolved = _resolve_attribution(session, command.seller_code, command.sku_code)
+    if isinstance(resolved, ReceivingResult):
+        return resolved
+    if resolved is None:
+        # 도메인이 두 코드를 요구하므로 도달할 수 없다.
+        return _rejected("seller_code", "판매사 코드가 비어 있습니다")
+
+    _, sku_id = resolved
+    advice_id = insert_advice(session, command, sku_id)
+    return ReceivingResult(ReceivingOutcome.APPLIED, advice_id=advice_id)
 
 
 def record_receipt(session: Session, command: ReceiptCommand) -> ReceivingResult:

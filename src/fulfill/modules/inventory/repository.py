@@ -18,11 +18,13 @@ from fulfill.modules.inventory.domain import (
     QC_FAIL,
     QC_STATE_PENDING,
     REVIEW_CONFIRMED,
+    AdviceCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
 )
 from fulfill.modules.inventory.models import (
+    InboundAdvice,
     OwnershipReview,
     QcDecision,
     Receipt,
@@ -45,6 +47,21 @@ class NewReceipt:
     command: ReceiptCommand
     seller_id: uuid.UUID | None
     sku_id: uuid.UUID | None
+
+
+def insert_advice(session: Session, command: AdviceCommand, sku_id: uuid.UUID) -> uuid.UUID:
+    """입고 예정을 기록하고 예정 id를 돌려준다 (AC-06).
+
+    seller_id를 저장하지 않는다. SKU가 이미 정확히 한 판매사에 속하기 때문이다.
+    """
+    advice = InboundAdvice(
+        sku_id=sku_id,
+        expected_quantity=command.expected_quantity,
+        advised_at=command.advised_at,
+    )
+    session.add(advice)
+    session.flush()
+    return advice.id
 
 
 def _normalized_location(value: str | None) -> str | None:

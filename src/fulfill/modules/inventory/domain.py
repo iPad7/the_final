@@ -54,6 +54,39 @@ MAX_REVIEW_NOTE_LENGTH = 1000
 
 
 @dataclass(frozen=True)
+class AdviceCommand:
+    """판매사가 입고 예정을 통보하는 명령."""
+
+    seller_code: str
+    sku_code: str
+    expected_quantity: int
+    advised_at: datetime
+
+
+def validate_advice(command: AdviceCommand) -> tuple[ValidationProblem, ...]:
+    """입고 예정 통보의 유효성을 판정한다 (AC-06).
+
+    판매사와 품목이 필수인 점이 실도착과 다르다. 예정 통보는 판매사가 보내는
+    것이라 보낸 쪽이 누구인지 늘 알며, inbound_advice.sku_id도 NOT NULL이다.
+    실도착은 소유자를 모르는 물건도 기록해야 해서 선택이었다(AC-08).
+    """
+    problems: list[ValidationProblem] = []
+
+    if command.expected_quantity <= 0:
+        problems.append(ValidationProblem("expected_quantity", "수량은 양수여야 합니다"))
+
+    if not normalize_text(command.seller_code):
+        problems.append(ValidationProblem("seller_code", "판매사 코드가 비어 있습니다"))
+    if not normalize_text(command.sku_code):
+        problems.append(ValidationProblem("sku_code", "SKU 코드가 비어 있습니다"))
+
+    if command.advised_at.tzinfo is None:
+        problems.append(ValidationProblem("advised_at", "시간대가 없는 통보 시각입니다"))
+
+    return tuple(problems)
+
+
+@dataclass(frozen=True)
 class ReceiptCommand:
     """실도착 한 건을 기록하라는 명령.
 
