@@ -6,9 +6,10 @@
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+
+from fulfill.shared.validation import ValidationProblem, normalize_text
 
 # 아래 정규화 규칙이 바뀔 때마다 올린다. fingerprint와 함께 저장해, 서로 다른
 # 규칙으로 만든 값을 같은 의미인 것처럼 비교하지 않도록 한다.
@@ -24,17 +25,6 @@ MAX_RECIPIENT_PHONE_LENGTH = 40
 # 주소 컬럼은 Text라 DB 제한이 없다. 이 값은 과도한 입력을 막는 도메인 정책이며
 # 대응하는 컬럼 길이가 없다.
 MAX_RECIPIENT_ADDRESS_LENGTH = 1000
-
-_WHITESPACE_RUN = re.compile(r"\s+")
-
-
-def normalize_text(value: str) -> str:
-    """앞뒤 공백을 제거하고 연속 공백을 하나로 합친다.
-
-    "A  101"과 "A 101"은 같은 주소이므로 합치는 것이 맞다. 다만 공백을 전부
-    제거하면 서로 다른 주소가 합쳐질 수 있어 거기까지는 가지 않는다.
-    """
-    return _WHITESPACE_RUN.sub(" ", value).strip()
 
 
 @dataclass(frozen=True)
@@ -61,12 +51,6 @@ class IntakeCommand:
     initial_due_at: datetime
     desired_ship_date: date | None
     occurred_at: datetime
-
-
-@dataclass(frozen=True)
-class ValidationProblem:
-    field: str
-    reason: str
 
 
 def _check_length(problems: list[ValidationProblem], field: str, value: str, limit: int) -> None:

@@ -1,8 +1,8 @@
-"""입고 예정·실도착·검수 판정·재고 버킷 테이블 추가
+"""입고 예정·실도착·검수 판정·귀속 확인·재고 버킷 테이블 추가
 
-Revision ID: 8337b5729af3
+Revision ID: c09adc7b3161
 Revises: d121330aa199
-Create Date: 2026-10-30 16:44:47.716167
+Create Date: 2026-10-30 17:37:17.382171
 
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # Alembic이 사용하는 리비전 식별자.
-revision: str = "8337b5729af3"
+revision: str = "c09adc7b3161"
 down_revision: str | Sequence[str] | None = "d121330aa199"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -83,6 +83,33 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_receipt")),
     )
     op.create_table(
+        "ownership_review",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("receipt_id", sa.Uuid(), nullable=False),
+        sa.Column("outcome", sa.String(length=20), nullable=False),
+        sa.Column("reviewed_by", sa.String(length=100), nullable=False),
+        sa.Column("note", sa.Text(), nullable=True),
+        sa.Column("due_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("environment_class", sa.String(length=20), nullable=False),
+        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "recorded_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "environment_class IN ('SIMULATION')", name="ck_review_environment_class"
+        ),
+        sa.CheckConstraint(
+            "outcome IN ('CONFIRMED', 'STILL_UNKNOWN', 'ESCALATED')", name="ck_review_outcome"
+        ),
+        sa.ForeignKeyConstraint(
+            ["receipt_id"], ["receipt.id"], name=op.f("fk_ownership_review_receipt_id")
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_ownership_review")),
+    )
+    op.create_table(
         "qc_decision",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("receipt_id", sa.Uuid(), nullable=False),
@@ -137,6 +164,7 @@ def downgrade() -> None:
     # ### Alembic이 자동 생성한 명령 — 검토 후 사용 ###
     op.drop_table("stock_position")
     op.drop_table("qc_decision")
+    op.drop_table("ownership_review")
     op.drop_table("receipt")
     op.drop_table("inbound_advice")
     # upgrade와 거울이 되도록 맨 뒤에 둔다. receipt의 FK가 이 제약에 의존하므로

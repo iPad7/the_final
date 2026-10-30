@@ -10,28 +10,28 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+# 업무 어휘는 domain이 소유한다. 여기서 다시 정의하면 CHECK 제약과 도메인
+# 판정이 갈라질 수 있다.
+from fulfill.modules.inventory.domain import (
+    OWNERSHIP_CONFIRMED,
+    OWNERSHIP_UNKNOWN,
+    QC_FAIL,
+    QC_PASS,
+    QC_STATE_FAILED,
+    QC_STATE_PASSED,
+    QC_STATE_PENDING,
+    REVIEW_OUTCOMES,
+)
 from fulfill.shared.db import Base
 
-OWNERSHIP_CONFIRMED = "CONFIRMED"
-OWNERSHIP_UNKNOWN = "UNKNOWN"
-
-# 미검수를 뜻하는 값은 없다. 판정의 부재는 판정이 아니며, 미검수 수량은
-# stock_position의 PENDING 버킷에 남은 양으로 읽는다.
-QC_PASS = "PASS"
-QC_FAIL = "FAIL"
-
-# 버킷의 검수 상태. 판정 결과(QC_PASS/QC_FAIL)와 구분한다. 판정은 사건이고
-# 이것은 그 사건을 적용한 뒤 실물이 놓인 상태다.
-QC_STATE_PENDING = "PENDING"
-QC_STATE_PASSED = "PASSED"
-QC_STATE_FAILED = "FAILED"
-
+# 이것은 업무 어휘가 아니라 운영 통제 장치라서 domain으로 올리지 않는다.
 # requests 모듈에도 같은 값이 있다. 모듈 간 ORM import는 경계 계약이 금지하므로
 # 피할 수 없는 중복이며, 두 값이 어긋나면 깨지는 테스트를 둔다.
 ENVIRONMENT_SIMULATION = "SIMULATION"
@@ -208,6 +208,51 @@ class QcDecision(Base):
     environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
 
     # AC-07이 요구하는 "판정 시각". 기록 시각과 구분한다.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OwnershipReview(Base):
+    """소유 귀속을 확인하려 한 시도 하나.
+
+    AC-08은 미확인품을 막는 것만으로 끝나지 않고 "공통 기준에 따른 확인·재확인·
+    관리자 보고를 기록"하라고 요구한다. receipt.ownership_status는 현재 상태만
+    담으므로, 몇 번 시도했고 기한이 언제였고 관리자가 어떤 판단을 했는지는 여기
+    쌓인다.
+
+    추가만 하고 수정하지 않는다. 재확인은 같은 행을 고치는 일이 아니라 새 사실이
+    생기는 일이다(AC-11·AC-36).
+
+    due_at에 그때 적용한 기한을 적는다. "운영사 공통 확인 기한"의 실제 값은 아직
+    미확정 운영 파라미터(R-05/06)이므로 코드에 박지 않고 사실로 기록한다. 나중에
+    계약값이 정해져도 과거 기록이 거짓이 되지 않는다.
+    """
+
+    __tablename__ = "ownership_review"
+    __table_args__ = (
+        CheckConstraint(
+            f"outcome IN ({', '.join(repr(value) for value in REVIEW_OUTCOMES)})",
+            name="ck_review_outcome",
+        ),
+        # 사람이 내린 판단을 적는 불변 사실이므로 환경을 DB가 강제한다(ADR23-08).
+        CheckConstraint(
+            f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
+            name="ck_review_environment_class",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    receipt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receipt.id"))
+    outcome: Mapped[str] = mapped_column(String(20))
+    reviewed_by: Mapped[str] = mapped_column(String(100))
+    # 확인하지 못한 이유, 관리자 판단 근거. 길이를 모르므로 Text로 둔다.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 이 시도에 적용한 운영사 공통 확인 기한. 기한을 적용하지 않은 시도도 있다.
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
+
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
