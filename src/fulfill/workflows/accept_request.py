@@ -16,9 +16,7 @@ from fulfill.modules.allocation.guard import issue_demand_seqs
 from fulfill.modules.inventory.queries import find_sku_ids_by_codes
 from fulfill.modules.requests.domain import (
     IntakeCommand,
-    ValidationProblem,
     fingerprint,
-    normalize_text,
     validate,
 )
 from fulfill.modules.requests.repository import (
@@ -29,6 +27,7 @@ from fulfill.modules.requests.repository import (
     is_duplicate_request_error,
 )
 from fulfill.modules.seller_contracts.queries import find_seller_id_by_code
+from fulfill.shared.validation import ValidationProblem, normalize_text
 
 
 class IntakeOutcome(StrEnum):

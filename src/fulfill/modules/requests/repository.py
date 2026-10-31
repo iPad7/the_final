@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from fulfill.modules.requests.domain import (
     NORMALIZATION_VERSION,
     IntakeCommand,
-    normalize_text,
 )
 from fulfill.modules.requests.models import (
     DEMAND_KIND_ORIGINAL,
@@ -24,6 +23,7 @@ from fulfill.modules.requests.models import (
     FulfillmentRequest,
     RequestLine,
 )
+from fulfill.shared.validation import normalize_text
 
 # 동시 접수를 실제로 막는 제약의 이름. 중복 판별이 이 이름에 의존한다.
 UNIQUE_REQUEST_CONSTRAINT = "uq_request_seller_external_id"

@@ -13,6 +13,7 @@ from pydantic.alias_generators import to_camel
 
 from fulfill.modules.requests.domain import IntakeCommand, Recipient, RequestedLine
 from fulfill.shared.db import unit_of_work
+from fulfill.shared.http import to_camel_path
 from fulfill.workflows.accept_request import IntakeOutcome, IntakeResult, accept_request
 
 
@@ -108,29 +109,13 @@ def _to_command(payload: IntakePayload) -> IntakeCommand:
     )
 
 
-def _to_camel_path(path: str) -> str:
-    """도메인 필드 경로를 JSON 표기로 바꾼다.
-
-    판매사는 camelCase로 보냈으므로 거절 사유도 같은 표기여야 자기가 보낸 필드를
-    찾을 수 있다. 도메인은 HTTP 표기를 알지 못하므로 변환은 이 계층에서 한다.
-
-    `lines[0].sku_code`처럼 인덱스가 붙은 경로를 다루므로 세그먼트별로 이름 부분만
-    바꾸고 대괄호는 그대로 둔다.
-    """
-    segments: list[str] = []
-    for segment in path.split("."):
-        name, bracket, index = segment.partition("[")
-        segments.append(to_camel(name) + bracket + index)
-    return ".".join(segments)
-
-
 def _to_response(result: IntakeResult) -> IntakeResponse:
     """조정 계층의 판정을 응답 DTO로 옮긴다."""
     return IntakeResponse(
         outcome=result.outcome,
         request_id=result.request_id,
         problems=[
-            ProblemPayload(field=_to_camel_path(problem.field), reason=problem.reason)
+            ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
             for problem in result.problems
         ],
     )

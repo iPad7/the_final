@@ -11,6 +11,13 @@ TABLES_IN_DELETE_ORDER = (
     "demand_segment",
     "request_line",
     "fulfillment_request",
+    # 입고 쪽도 자식부터. 세 테이블이 모두 receipt를 참조하고, receipt는
+    # inbound_advice와 sku를 참조한다.
+    "stock_position",
+    "qc_decision",
+    "ownership_review",
+    "receipt",
+    "inbound_advice",
     "sku_demand_guard",
     "sku",
     "seller",

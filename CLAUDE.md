@@ -1,6 +1,6 @@
 # THE FINAL — Claude Code Project Instructions
 
-> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-0 골격 완료**(CI 통과 확인). 다음은 24-1 요청 접수·멱등.
+> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-2 입고·부분 QC 완료**. 다음은 24-3 FIFO 배정·실PG 동시성.
 > 이 파일은 Claude Code의 **작업 방식**을 정의합니다. 업무 규칙·요구사항·아키텍처 상세는 Notion 원본을 따르며 여기에 복제하지 않습니다.
 
 ## 1. 프로젝트 목적
@@ -114,7 +114,10 @@
 
 ## 7. 단계 규칙
 
-- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0은 완료**입니다(FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과). 다음 작업은 24-1입니다.
+- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0·24-1·24-2는 완료**입니다. 다음 작업은 24-3입니다.
+  - 24-0: FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과
+  - 24-1: 요청 접수와 동일 요청 멱등. 유니크 제약 + SAVEPOINT 복구 경로를 실PG로 검증
+  - 24-2: 예정/실도착 구분, 부분 QC, 소유자 미확인 입고. 재고는 동질 버킷 `(sku, receipt, qc_state, location)`이며 검수는 버킷 간 수량 이동이라 입고 수량이 보존됩니다
   - 24-0 골격(uv, FastAPI health, PostgreSQL, Alembic, pytest+Testcontainers, CI)
   - 24-1 요청 접수·멱등 (AC-01/02)
   - 24-2 입고·QC (AC-06~08)
@@ -132,6 +135,7 @@
 - 동시성·트랜잭션 검증은 실제 PostgreSQL(Testcontainers)에서 합니다. SQLite 결과로 FIFO 경쟁 합격을 주장하지 않습니다.
 - 변경 관련 테스트부터 실행하고 가능하면 전체 검증을 수행합니다.
 - 마이그레이션, 대량 수정, 삭제처럼 되돌리기 어려운 작업은 영향과 복구 방법을 먼저 보고합니다.
+- **`alembic revision --autogenerate` 결과를 그대로 쓰지 않습니다.** 생성본을 읽고 `upgrade → downgrade → upgrade` 왕복을 실제 DB에서 확인합니다. autogenerate는 객체별로 명령을 나열할 뿐 "새 테이블이 기존 테이블의 새 제약에 의존한다"는 관계를 모르므로 순서가 틀릴 수 있습니다(24-2에서 두 번 발생). 모델이 맞다는 것과 마이그레이션이 맞다는 것은 다른 사실입니다.
 - 중요한 결정이 바뀌면 관련 Notion 문서·Decision Log와 저장소 `docs/adr/`의 수정안을 제시합니다. 승인 없이 조용히 고치지 않습니다.
 - 불필요한 주석, 중복 문서, 과잉 추상화를 만들지 않습니다.
 
