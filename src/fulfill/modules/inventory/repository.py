@@ -16,6 +16,7 @@ from fulfill.modules.inventory.domain import (
     OWNERSHIP_CONFIRMED,
     OWNERSHIP_UNKNOWN,
     QC_FAIL,
+    QC_STATE_PASSED,
     QC_STATE_PENDING,
     REVIEW_CONFIRMED,
     AdviceCommand,
@@ -259,6 +260,73 @@ def apply_qc_decision(session: Session, command: QcCommand) -> None:
         # 도메인 검증을 통과했다면 도달할 수 없다. 조용히 일부만 옮기면 보존
         # 불변식이 깨진 채로 커밋되므로 소리 내어 실패한다.
         raise ValueError(f"미검수 수량이 부족합니다: {remaining}개를 옮길 버킷이 없습니다")
+
+
+@dataclass(frozen=True)
+class AllocatableBucket:
+    """신규 배정에 쓸 수 있는 버킷 하나와 그 가용량."""
+
+    bucket_id: uuid.UUID
+    # 버킷 수량이 아니라 아직 배정되지 않은 수량이다. 이미 다른 요청에 배정된
+    # 몫을 뺀 값이므로, 이것을 그대로 쓰면 NBR-04의 중복 배정이 일어나지 않는다.
+    available: int
+
+
+def lock_allocatable_buckets(session: Session, sku_id: uuid.UUID) -> tuple[AllocatableBucket, ...]:
+    """이 SKU에서 신규 배정 자격이 있는 버킷을 잠그고 돌려준다 (AC-07, AC-09).
+
+    적격 조건이 `qc_state == PASSED` 하나뿐인 것은 24-2의 버킷 설계 효과다.
+    미검수와 불합격은 각자 다른 버킷에 있어 따로 뺄 필요가 없고, 귀속 미확정
+    물량은 버킷 자체가 없다(AC-08).
+
+    위치를 조건에 넣지 않는다. NBR-12·AC-09가 "QC 합격 후 위치 미확정 상품은
+    배정 가능하지만 피킹 불가"를 요구하므로, 여기서 위치를 걸러내면 그 요구를
+    위반한다. 위치 관문은 피킹 판정의 일이다.
+
+    정렬은 위치가 확정된 버킷을 앞에 둔다. 업무 규칙이 아니라 동순위 사이의
+    선택이다. 어느 실물을 어느 요청에 줄지는 어떤 문서도 정하지 않았지만, 위치
+    미확정 버킷을 먼저 소진하면 "배정은 됐는데 피킹할 수 없는" 요청이 쌓인다.
+    FIFO는 수요의 순서를 정하는 규칙이고 이 선택은 그것과 무관하다.
+
+    잠그는 이유는 lock_pending_quantity와 같다. 가용량을 읽은 뒤 예약하기까지의
+    틈에 다른 배정이 같은 버킷을 가져가면 두 배정의 합이 버킷 수량을 넘는다.
+    CHECK 제약이 그 커밋을 거부하지만, 거기까지 가면 담당자는 업무 사유 대신
+    서버 오류를 받는다.
+    """
+    rows = session.execute(
+        select(
+            StockPosition.id,
+            StockPosition.quantity - StockPosition.allocated_quantity,
+        )
+        .where(
+            StockPosition.sku_id == sku_id,
+            StockPosition.qc_state == QC_STATE_PASSED,
+            StockPosition.quantity > StockPosition.allocated_quantity,
+        )
+        .order_by(StockPosition.location_code.nulls_last(), StockPosition.id)
+        .with_for_update()
+    ).all()
+    return tuple(AllocatableBucket(bucket_id=row[0], available=row[1]) for row in rows)
+
+
+def reserve_in_bucket(session: Session, bucket_id: uuid.UUID, quantity: int) -> None:
+    """버킷의 배정량을 늘린다 (AC-04).
+
+    배정 사실의 원장은 allocation 테이블이고 이 컬럼은 그 합계다. 두 쓰기는 같은
+    트랜잭션에 있어야 하며, 조정 계층이 그것을 보장한다.
+
+    `allocated_quantity + quantity`를 SQL 식으로 쓴다. 파이썬에서 더해 넣으면 읽은
+    값이 낡았을 수 있다. 여기서는 호출 전에 버킷을 잠그므로 둘의 결과가 같지만,
+    잠금에 의존하지 않는 쪽이 안전하다.
+
+    한도를 넘으면 ck_stock_allocated_within_quantity가 커밋을 거부한다. 도달하면
+    잠금이나 배분 계산에 버그가 있다는 뜻이다.
+    """
+    session.execute(
+        update(StockPosition)
+        .where(StockPosition.id == bucket_id)
+        .values(allocated_quantity=StockPosition.allocated_quantity + quantity)
+    )
 
 
 def lock_ownership_status(session: Session, receipt_id: uuid.UUID) -> str | None:

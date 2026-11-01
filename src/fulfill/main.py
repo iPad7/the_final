@@ -2,12 +2,14 @@
 
 from fastapi import FastAPI
 
+from fulfill.modules.allocation.api import router as allocation_router
 from fulfill.modules.inventory.api import router as inventory_router
 from fulfill.modules.requests.api import router as requests_router
 
 app = FastAPI(title="THE FINAL fulfillment backend")
 app.include_router(requests_router)
 app.include_router(inventory_router)
+app.include_router(allocation_router)
 
 
 @app.get("/health")
