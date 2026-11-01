@@ -15,15 +15,15 @@
 
 | 역할 | 문서 |
 |---|---|
-| 업무 규칙 | 04_BUSINESS_RULES (NBR-01~49), 03 확정 정책 원장 (D/G/POL) |
-| 제품 범위·판정 | 13_MVP_SCOPE v1.0, 05_BUSINESS_REQUIREMENTS (REQ-01~36), 15_ACCEPTANCE_CRITERIA (AC-01~36, CT-01~05) |
-| 기술 구조 | ENGINEERING_BASELINE v1.0, 23_ARCHITECTURE_ADRS (ADR23-01~09) |
+| 업무 규칙 | 04_BUSINESS_RULES (NBR-01 ~ 49), 03 확정 정책 원장 (D/G/POL) |
+| 제품 범위·판정 | 13_MVP_SCOPE v1.0, 05_BUSINESS_REQUIREMENTS (REQ-01 ~ 36), 15_ACCEPTANCE_CRITERIA (AC-01 ~ 36, CT-01 ~ 05) |
+| 기술 구조 | ENGINEERING_BASELINE v1.0, 23_ARCHITECTURE_ADRS (ADR23-01 ~ 09) |
 | 결정 근거 | Decision Log DB |
 | 진행 상태 | Project Tasks DB (원본) |
-| 미확정 의존성 | Operating Dependencies DB (R-01~09) |
-| 과거 맥락 | 90 · 이전 문서 보관함 (14 용어·생명주기, 18~22 상세 설계, Validation Lab 07~12). 현재 기준선 아님 |
+| 미확정 의존성 | Operating Dependencies DB (R-01 ~ 09) |
+| 과거 맥락 | 90 · 이전 문서 보관함 (14 용어·생명주기, 18 ~ 22 상세 설계, Validation Lab 07 ~ 12). 현재 기준선 아님 |
 
-- 08~12의 수치(420분, 200포장물, 17:15, Asia/Tokyo)는 과거 일본형 가상값입니다. 국내 실측·계약값으로 쓰지 않습니다.
+- 08 ~ 12의 수치(420분, 200포장물, 17:15, Asia/Tokyo)는 과거 일본형 가상값입니다. 국내 실측·계약값으로 쓰지 않습니다.
 - 문서 간 충돌을 발견하면 **어느 문서의 어떤 내용이 충돌하는지** 보고하고 임의로 해결하지 않습니다. 기준: NBR=규칙, REQ/AC=범위·판정, ENGINEERING_BASELINE/23=기술 구조, Decision Log=결정 근거.
 - Notion 문서·DB는 승인 없이 수정하지 않습니다.
 
@@ -114,17 +114,17 @@
 
 ## 7. 단계 규칙
 
-- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0~24-3은 완료**입니다. 다음 작업은 24-4입니다.
+- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0 ~ 24-3은 완료**입니다. 다음 작업은 24-4입니다.
   - **24-0 완료** — 골격: uv, FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과
   - **24-1 완료** — 요청 접수·동일 요청 멱등 (AC-01/02). 유니크 제약 + SAVEPOINT 복구 경로를 실PG로 검증
-  - **24-2 완료** — 입고·부분 QC·소유자 미확인 입고 (AC-06~08). 재고는 동질 버킷 `(sku, receipt, qc_state, location)`이며 검수는 버킷 간 수량 이동이라 입고 수량이 보존됩니다
+  - **24-2 완료** — 입고·부분 QC·소유자 미확인 입고 (AC-06 ~ 08). 재고는 동질 버킷 `(sku, receipt, qc_state, location)`이며 검수는 버킷 간 수량 이동이라 입고 수량이 보존됩니다
   - **24-3 완료** — FIFO 배정·수량 증감·실PG 동시성 (AC-03, AC-04 부분). 배정은 `(수요 구간, 재고 버킷)` 쌍에 붙은 수량이고, 이중 배정은 `stock_position.allocated_quantity`의 CHECK가 막습니다. 같은 SKU의 수요·배정·수량 변경은 모두 guard 행 하나를 잠그고 직렬화됩니다. 증량은 새 후순위 구간, 감량은 최신 구간부터이며 풀린 물량은 같은 트랜잭션에서 선순위로 재배정됩니다
   - 24-4 피킹 준비 판정 (AC-05/09). **AC-04의 HOLD 축이 여기 남아 있습니다** — 24-3은 이중 배정과 부분/미확보 구분까지만 충족했습니다
   - 24-5 DTO·ERD·import 검사·실패 주입
 - 보고·계획·패킹·집하 전체 구현과 reporting 서비스 분리는 24단계 범위 밖입니다.
 - Project Tasks의 진행 상태는 실제 근거가 있을 때만, 수정안을 보여 드리고 승인받은 뒤 갱신합니다.
 - **ADR23-05(guard row + FOR UPDATE)는 실제 PostgreSQL 경합 테스트 결과가 나오기 전까지 '검토 중'을 유지합니다.**
-- **R-01~09는 완료로 표시하지 않습니다.** 포트폴리오 범위에서는 "문서화된 가정"으로 다루고 구현을 막는 관문으로 쓰지 않습니다.
+- **R-01 ~ 09는 완료로 표시하지 않습니다.** 포트폴리오 범위에서는 "문서화된 가정"으로 다루고 구현을 막는 관문으로 쓰지 않습니다.
 
 ## 8. 테스트·문서·작업 안전
 
