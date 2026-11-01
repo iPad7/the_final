@@ -42,14 +42,34 @@ BUCKET_STATE_BY_QC_RESULT = {
     QC_FAIL: QC_STATE_FAILED,
 }
 
+# 재고 사용 보류를 걸게 되는 사유. AC-10이 "조사 근거"를 업무 근거로 요구하므로
+# 자유 문자열로 두지 않는다. 다만 사유별 기한·승인 요건은 미확정 운영
+# 파라미터(R-05)이므로 코드에 박지 않는다.
+#
+# 수량 차이 의심. NBR-14가 "추정만으로 손실 확정·재배정 금지"라고 한 그 단계다.
+HOLD_REASON_COUNT_DISCREPANCY = "COUNT_DISCREPANCY"
+# 사후 품질 의심. QC 불합격과 다르다 — 불합격은 판정이고 이쪽은 조사 착수다.
+HOLD_REASON_QUALITY_SUSPECTED = "QUALITY_SUSPECTED"
+# 위 둘로 분류되지 않는 관리자 판단. note에 근거를 남기게 한다.
+HOLD_REASON_OTHER = "OTHER"
+
+HOLD_REASONS = (
+    HOLD_REASON_COUNT_DISCREPANCY,
+    HOLD_REASON_QUALITY_SUSPECTED,
+    HOLD_REASON_OTHER,
+)
+
 # 길이 상한. DB 컬럼 길이와 같은 값이 두 곳에 존재하지만, 도메인은 SQLAlchemy를
 # import할 수 없으므로 피할 수 없다. 두 값이 어긋나면 깨지는 테스트를 둔다.
 MAX_CONFIRMED_BY_LENGTH = 100
 MAX_DECIDED_BY_LENGTH = 100
+MAX_HELD_BY_LENGTH = 100
+MAX_LIFTED_BY_LENGTH = 100
 MAX_LOCATION_CODE_LENGTH = 100
 MAX_REVIEWED_BY_LENGTH = 100
 # 사유 컬럼은 Text라 DB 제한이 없다. 과도한 입력을 막는 도메인 정책이며 대응하는
 # 컬럼 길이가 없다.
+MAX_HOLD_NOTE_LENGTH = 1000
 MAX_REVIEW_NOTE_LENGTH = 1000
 
 
@@ -282,5 +302,93 @@ def validate_ownership_review(
         problems.append(ValidationProblem("occurred_at", "시간대가 없는 검토 시각입니다"))
     if command.due_at is not None and command.due_at.tzinfo is None:
         problems.append(ValidationProblem("due_at", "시간대가 없는 확인 기한입니다"))
+
+    return tuple(problems)
+
+
+@dataclass(frozen=True)
+class HoldCommand:
+    """입고묶음 하나에 사용 보류를 걸라는 명령 (AC-04, AC-10)."""
+
+    receipt_id: uuid.UUID
+    reason: str
+    held_by: str
+    occurred_at: datetime
+    # 조사 근거. OTHER 사유에서는 필수다.
+    note: str | None = None
+
+
+def validate_hold(command: HoldCommand) -> tuple[ValidationProblem, ...]:
+    """보류 설정 명령의 유효성을 판정한다 (AC-10).
+
+    대상 입고묶음이 존재하는지, 이미 보류 중인지는 보지 않는다. 전자는 조회이고
+    후자는 DB의 부분 유니크 인덱스가 판정하는 사실이므로 둘 다 조정 계층의
+    일이다.
+    """
+    problems: list[ValidationProblem] = []
+
+    if command.reason not in HOLD_REASONS:
+        problems.append(ValidationProblem("reason", "허용되지 않는 보류 사유입니다"))
+
+    held_by = normalize_text(command.held_by)
+    if not held_by:
+        problems.append(ValidationProblem("held_by", "보류 주체가 비어 있습니다"))
+    elif len(held_by) > MAX_HELD_BY_LENGTH:
+        problems.append(ValidationProblem("held_by", f"{MAX_HELD_BY_LENGTH}자를 넘습니다"))
+
+    note = normalize_text(command.note or "")
+    if len(note) > MAX_HOLD_NOTE_LENGTH:
+        problems.append(ValidationProblem("note", f"{MAX_HOLD_NOTE_LENGTH}자를 넘습니다"))
+    # 분류되지 않는 사유를 근거 없이 받으면 "관리자가 판단했다"는 사실만 남고
+    # 무엇을 근거로 재고를 묶었는지가 사라진다. AC-10은 확인 자료를 요구한다.
+    if command.reason == HOLD_REASON_OTHER and not note:
+        problems.append(ValidationProblem("note", "기타 사유에는 조사 근거가 필요합니다"))
+
+    # 실제 발생 시각을 기록 시각과 구분하려면 어느 시점을 말하는지가 확정돼야
+    # 한다. 시간대 없는 값은 그 자체로 모호하다.
+    if command.occurred_at.tzinfo is None:
+        problems.append(ValidationProblem("occurred_at", "시간대가 없는 보류 시각입니다"))
+
+    return tuple(problems)
+
+
+@dataclass(frozen=True)
+class LiftHoldCommand:
+    """입고묶음의 사용 보류를 풀라는 명령 (AC-10)."""
+
+    receipt_id: uuid.UUID
+    lifted_by: str
+    occurred_at: datetime
+    # 무엇을 확인해 풀었는지. 설정과 달리 항상 요구한다.
+    note: str
+
+
+def validate_lift_hold(command: LiftHoldCommand) -> tuple[ValidationProblem, ...]:
+    """보류 해제 명령의 유효성을 판정한다 (AC-10).
+
+    해제에는 사유 어휘가 없다. 설정은 "무엇을 의심하는가"에 따라 갈라지지만 해제는
+    "조사가 끝났다" 한 종류이며, 갈라지는 것은 그때 확인한 내용이다. 그래서 어휘
+    대신 근거를 필수로 받는다.
+
+    활성 보류가 실제로 있는지는 보지 않는다. 조회이므로 조정 계층의 일이다.
+    """
+    problems: list[ValidationProblem] = []
+
+    lifted_by = normalize_text(command.lifted_by)
+    if not lifted_by:
+        problems.append(ValidationProblem("lifted_by", "해제 주체가 비어 있습니다"))
+    elif len(lifted_by) > MAX_LIFTED_BY_LENGTH:
+        problems.append(ValidationProblem("lifted_by", f"{MAX_LIFTED_BY_LENGTH}자를 넘습니다"))
+
+    note = normalize_text(command.note)
+    # 근거 없는 해제를 받으면 조사 없이 재고를 되살리는 경로가 생긴다. NBR-14는
+    # 추정만으로 재배정하지 말라고 요구하며, 해제는 재배정을 다시 여는 행위다.
+    if not note:
+        problems.append(ValidationProblem("note", "해제 근거가 필요합니다"))
+    elif len(note) > MAX_HOLD_NOTE_LENGTH:
+        problems.append(ValidationProblem("note", f"{MAX_HOLD_NOTE_LENGTH}자를 넘습니다"))
+
+    if command.occurred_at.tzinfo is None:
+        problems.append(ValidationProblem("occurred_at", "시간대가 없는 해제 시각입니다"))
 
     return tuple(problems)

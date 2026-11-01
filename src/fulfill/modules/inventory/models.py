@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 # 업무 어휘는 domain이 소유한다. 여기서 다시 정의하면 CHECK 제약과 도메인
 # 판정이 갈라질 수 있다.
 from fulfill.modules.inventory.domain import (
+    HOLD_REASONS,
     OWNERSHIP_CONFIRMED,
     OWNERSHIP_UNKNOWN,
     QC_FAIL,
@@ -258,6 +260,83 @@ class OwnershipReview(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class InventoryHold(Base):
+    """입고묶음 하나에 걸린 사용 보류 한 건 (AC-04, AC-10).
+
+    범위 단위가 receipt인 것이 이 테이블의 전제다. NBR-14는 "영향 가능 범위"만
+    보류하라고 요구하고 AC-10은 무관 재고 30개의 자동 차단을 금지한다. 영향
+    범위를 가르는 단위는 입고묶음이므로(19 §3), 같은 SKU의 다른 입고묶음은 이
+    보류에 걸리지 않는다.
+
+    stock_position의 컬럼이 아니라 별 테이블인 것이 설계의 핵심이다. 버킷에
+    HOLD를 넣으면 보류가 수량 분할이 되어, 이미 배정된 재고도 사용 보류일 수
+    있다는 CB-04의 요구를 표현할 수 없다. 여기서는 보류와 유효 배정이 공존하며,
+    보류가 걸려도 기존 배정은 사라지지 않는다 — AC-04가 "조사 의심 단계에서
+    유효 배정을 무단 삭제하지 않는다"고 금지한 것이다.
+
+    해제를 같은 행에 채운다. allocation_release처럼 별 테이블을 두지 않는 이유는
+    부분 해제라는 개념이 없기 때문이다. 한 보류는 한 번 풀리고, 다시 보류하는
+    것은 같은 사실의 연장이 아니라 새 사실이므로 새 행이 된다.
+    """
+
+    __tablename__ = "inventory_hold"
+    __table_args__ = (
+        CheckConstraint(
+            f"reason IN ({', '.join(repr(value) for value in HOLD_REASONS)})",
+            name="ck_hold_reason",
+        ),
+        # 해제의 세 사실은 함께 생긴다. 하나만 채워진 행은 "언제 풀렸는지 모르는
+        # 해제"나 "누가 풀었는지 모르는 해제"이며 AC-36의 판단 주체·시점 보존을
+        # 만족하지 못한다. 활성 판정이 lifted_at 하나만 보므로, 이 제약이 없으면
+        # 주체 없이 풀린 보류가 조용히 활성에서 빠진다.
+        CheckConstraint(
+            "(lifted_at IS NULL AND lifted_by IS NULL AND lifted_recorded_at IS NULL)"
+            " OR (lifted_at IS NOT NULL AND lifted_by IS NOT NULL"
+            " AND lifted_recorded_at IS NOT NULL)",
+            name="ck_hold_lift_fields_together",
+        ),
+        # 사람이 내린 판단을 적는 불변 사실이므로 환경을 DB가 강제한다(ADR23-08).
+        CheckConstraint(
+            f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
+            name="ck_hold_environment_class",
+        ),
+        # 한 입고묶음에 활성 보류는 하나다. 해제된 행은 몇 개든 쌓인다.
+        #
+        # 부분 유니크 인덱스라서 조건을 만족하는 행들 사이에서만 유일성을 본다.
+        # 조회해서 없으면 넣는 방식으로 중복을 막으면 확인과 삽입 사이에 다른
+        # 트랜잭션이 끼어들 수 있다(24-1의 멱등 경로와 같은 문제다).
+        Index(
+            "uq_hold_active_per_receipt",
+            "receipt_id",
+            unique=True,
+            postgresql_where=text("lifted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    receipt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receipt.id"))
+    reason: Mapped[str] = mapped_column(String(30))
+    # AC-10이 요구하는 "조사 근거". 길이를 모르므로 Text로 둔다.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    held_by: Mapped[str] = mapped_column(String(100))
+    environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
+
+    # 보류가 실제로 시작된 시각과 기록된 시각을 구분한다.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # NULL이면 활성 보류다. 상태 컬럼을 따로 두지 않는 이유는 24-3에서 미충족
+    # 수량에 컬럼을 두지 않은 것과 같다 — 갱신을 누락할 자리를 만들지 않는다.
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifted_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lifted_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lifted_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class StockPosition(Base):

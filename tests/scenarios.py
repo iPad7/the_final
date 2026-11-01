@@ -14,7 +14,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from fulfill.modules.allocation.domain import AllocationRunCommand
-from fulfill.modules.inventory.domain import QC_FAIL, QC_PASS, QcCommand, ReceiptCommand
+from fulfill.modules.inventory.domain import (
+    HOLD_REASON_COUNT_DISCREPANCY,
+    QC_FAIL,
+    QC_PASS,
+    HoldCommand,
+    LiftHoldCommand,
+    QcCommand,
+    ReceiptCommand,
+)
 from fulfill.modules.inventory.queries import find_sku_ids_by_codes
 from fulfill.modules.requests.domain import (
     IntakeCommand,
@@ -31,6 +39,7 @@ from fulfill.workflows.allocate import (
     run_allocation,
     summarize_request_allocation,
 )
+from fulfill.workflows.hold import HoldResult, lift_inventory_hold, place_inventory_hold
 from fulfill.workflows.receiving import ReceivingOutcome, record_qc_decision, record_receipt
 from fulfill.workflows.revise_demand import RevisionResult, revise_demand
 from tests.seed_data import SELLER_A, SKU_P
@@ -191,3 +200,36 @@ def place_multi_line_request(
     assert result.outcome is IntakeOutcome.APPLIED
     assert result.request_id is not None
     return result.request_id
+
+
+def place_hold(
+    receipt_id: uuid.UUID,
+    reason: str = HOLD_REASON_COUNT_DISCREPANCY,
+    note: str | None = "기록과 실물 수량이 다름",
+) -> HoldResult:
+    """입고묶음에 사용 보류를 건다."""
+    with unit_of_work() as session:
+        return place_inventory_hold(
+            session,
+            HoldCommand(
+                receipt_id=receipt_id,
+                reason=reason,
+                held_by="WH-MANAGER-01",
+                occurred_at=NOW,
+                note=note,
+            ),
+        )
+
+
+def lift_hold(receipt_id: uuid.UUID) -> HoldResult:
+    """입고묶음의 사용 보류를 푼다."""
+    with unit_of_work() as session:
+        return lift_inventory_hold(
+            session,
+            LiftHoldCommand(
+                receipt_id=receipt_id,
+                lifted_by="WH-MANAGER-01",
+                occurred_at=NOW,
+                note="재실사 결과 기록과 실물이 일치",
+            ),
+        )

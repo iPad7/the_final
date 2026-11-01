@@ -7,7 +7,7 @@ ORM 객체를 모듈 밖으로 내보내지 않는다. 호출자에게는 판정
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -20,17 +20,21 @@ from fulfill.modules.inventory.domain import (
     QC_STATE_PENDING,
     REVIEW_CONFIRMED,
     AdviceCommand,
+    HoldCommand,
+    LiftHoldCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
 )
 from fulfill.modules.inventory.models import (
     InboundAdvice,
+    InventoryHold,
     OwnershipReview,
     QcDecision,
     Receipt,
     StockPosition,
 )
+from fulfill.modules.inventory.queries import active_hold_exists
 from fulfill.shared.validation import normalize_text
 
 # 버킷 유니크 제약의 이름. 같은 버킷에 수량을 더하는 동작이 이 이름에 의존한다.
@@ -283,6 +287,14 @@ def lock_allocatable_buckets(session: Session, sku_id: uuid.UUID) -> tuple[Alloc
     배정 가능하지만 피킹 불가"를 요구하므로, 여기서 위치를 걸러내면 그 요구를
     위반한다. 위치 관문은 피킹 판정의 일이다.
 
+    사용 보류가 걸린 입고묶음은 제외한다. NBR-14의 "영향 가능 범위 사용 보류"이며,
+    범위 단위가 입고묶음이므로 같은 SKU의 다른 입고묶음은 영향을 받지 않는다 —
+    AC-10이 무관 재고 30개의 자동 차단을 금지한 그 구분이다.
+
+    **제외는 신규 배정에만 걸린다.** 이미 붙어 있는 배정은 이 질의가 손대지
+    않으므로 그대로 유효하다. AC-04는 조사 의심 단계에서 유효 배정을 무단 삭제
+    하지 말라고 금지하며, 보류와 유효 배정은 공존한다.
+
     정렬은 위치가 확정된 버킷을 앞에 둔다. 업무 규칙이 아니라 동순위 사이의
     선택이다. 어느 실물을 어느 요청에 줄지는 어떤 문서도 정하지 않았지만, 위치
     미확정 버킷을 먼저 소진하면 "배정은 됐는데 피킹할 수 없는" 요청이 쌓인다.
@@ -302,6 +314,7 @@ def lock_allocatable_buckets(session: Session, sku_id: uuid.UUID) -> tuple[Alloc
             StockPosition.sku_id == sku_id,
             StockPosition.qc_state == QC_STATE_PASSED,
             StockPosition.quantity > StockPosition.allocated_quantity,
+            ~active_hold_exists(StockPosition.receipt_id),
         )
         .order_by(StockPosition.location_code.nulls_last(), StockPosition.id)
         .with_for_update()
@@ -428,3 +441,66 @@ def release_in_bucket(session: Session, bucket_id: uuid.UUID, quantity: int) -> 
         .where(StockPosition.id == bucket_id)
         .values(allocated_quantity=StockPosition.allocated_quantity - quantity)
     )
+
+
+# 활성 보류 부분 유니크 인덱스의 이름. 중복 보류 판정이 이 인덱스에 의존한다.
+ACTIVE_HOLD_CONSTRAINT = "uq_hold_active_per_receipt"
+
+
+def insert_hold(session: Session, command: HoldCommand) -> uuid.UUID | None:
+    """사용 보류를 걸고 보류 id를 돌려준다. None이면 이미 보류 중이다 (AC-10).
+
+    조회해서 없으면 넣는 방식을 쓰지 않는다. 확인과 삽입 사이에 다른 담당자가
+    같은 입고묶음을 보류하면 활성 보류가 둘이 되고, 그러면 해제 한 번으로 풀리지
+    않는 재고가 생긴다. 24-1의 멱등 경로에서 본 것과 같은 틈이다.
+
+    대신 부분 유니크 인덱스에 판정을 맡긴다. 충돌하면 아무것도 넣지 않고
+    RETURNING이 비어 돌아오므로, 왕복 한 번으로 "넣었다"와 "이미 있다"가 갈린다.
+    `index_where`가 인덱스의 조건과 같아야 PostgreSQL이 이 인덱스를 충돌 대상으로
+    인식한다.
+
+    중복 보류를 오류로 올리지 않는다. 같은 재고를 두 번 묶으려는 시도는 업무상
+    사고가 아니라 이미 달성된 상태이며, 판정 어휘를 고르는 것은 조정 계층의 일이다.
+    """
+    return session.execute(
+        insert(InventoryHold)
+        .values(
+            receipt_id=command.receipt_id,
+            reason=command.reason,
+            note=normalize_text(command.note or "") or None,
+            held_by=normalize_text(command.held_by),
+            occurred_at=command.occurred_at,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["receipt_id"],
+            index_where=InventoryHold.lifted_at.is_(None),
+        )
+        .returning(InventoryHold.id)
+    ).scalar_one_or_none()
+
+
+def lift_hold(session: Session, command: LiftHoldCommand) -> uuid.UUID | None:
+    """사용 보류를 풀고 보류 id를 돌려준다. None이면 활성 보류가 없었다 (AC-10).
+
+    활성 조건을 WHERE에 둔다. 그러면 "활성인 것만 해제한다"가 조회 없이 성립하고,
+    이미 풀린 보류에 대한 요청은 0행을 갱신하고 끝난다. 먼저 조회해 판정하면 그
+    사이에 다른 담당자가 해제할 수 있고, 두 해제가 모두 성공한 것처럼 보이면서
+    나중 것이 앞선 해제 주체와 시각을 덮어쓴다.
+
+    해제 기록 시각은 DB 시계로 찍는다. 발생 시각은 담당자가 말한 때이고 이쪽은
+    시스템이 그 말을 받은 때이므로, 둘을 같은 출처에서 가져오면 구분이 사라진다.
+    """
+    return session.execute(
+        update(InventoryHold)
+        .where(
+            InventoryHold.receipt_id == command.receipt_id,
+            InventoryHold.lifted_at.is_(None),
+        )
+        .values(
+            lifted_at=command.occurred_at,
+            lifted_recorded_at=func.now(),
+            lifted_by=normalize_text(command.lifted_by),
+            lifted_note=normalize_text(command.note),
+        )
+        .returning(InventoryHold.id)
+    ).scalar_one_or_none()

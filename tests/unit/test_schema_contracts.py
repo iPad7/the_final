@@ -18,6 +18,8 @@ from fulfill.modules.allocation.models import (
 from fulfill.modules.inventory.domain import (
     MAX_CONFIRMED_BY_LENGTH,
     MAX_DECIDED_BY_LENGTH,
+    MAX_HELD_BY_LENGTH,
+    MAX_LIFTED_BY_LENGTH,
     MAX_LOCATION_CODE_LENGTH,
     MAX_REVIEWED_BY_LENGTH,
 )
@@ -25,6 +27,7 @@ from fulfill.modules.inventory.models import (
     ENVIRONMENT_SIMULATION as INVENTORY_ENVIRONMENT_SIMULATION,
 )
 from fulfill.modules.inventory.models import (
+    InventoryHold,
     OwnershipReview,
     QcDecision,
     Receipt,
@@ -78,6 +81,8 @@ def test_입고_도메인_길이_상한이_컬럼_길이와_일치한다() -> No
     assert _varchar_length(QcDecision.__table__, "decided_by") == MAX_DECIDED_BY_LENGTH
     assert _varchar_length(OwnershipReview.__table__, "reviewed_by") == MAX_REVIEWED_BY_LENGTH
     assert _varchar_length(StockPosition.__table__, "location_code") == MAX_LOCATION_CODE_LENGTH
+    assert _varchar_length(InventoryHold.__table__, "held_by") == MAX_HELD_BY_LENGTH
+    assert _varchar_length(InventoryHold.__table__, "lifted_by") == MAX_LIFTED_BY_LENGTH
 
 
 def test_환경_구분_값이_모듈_사이에서_일치한다() -> None:

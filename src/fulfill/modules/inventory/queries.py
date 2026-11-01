@@ -3,12 +3,40 @@
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, SQLColumnExpression, func, select
 from sqlalchemy.orm import Session
 
 from fulfill.modules.inventory.domain import QC_STATE_PASSED
-from fulfill.modules.inventory.models import InboundAdvice, Receipt, Sku, StockPosition
+from fulfill.modules.inventory.models import (
+    InboundAdvice,
+    InventoryHold,
+    Receipt,
+    Sku,
+    StockPosition,
+)
+
+
+def active_hold_exists(receipt_id: SQLColumnExpression[uuid.UUID]) -> ColumnElement[bool]:
+    """이 입고묶음에 풀리지 않은 사용 보류가 있는가 (AC-04, NBR-14).
+
+    질의 조건으로 쓸 식만 만든다. 배정 자격을 판정하는 곳이 두 군데(잠금과 가용량
+    조회)이고, 조건을 양쪽에 따로 쓰면 한쪽만 고쳐질 수 있다. 그때 생기는 상태는
+    "현황에는 0인데 배정은 되는" 또는 그 반대이며, 둘 다 담당자가 재고를 신뢰할 수
+    없게 만든다.
+
+    활성 여부를 `lifted_at IS NULL`로 판정한다. 상태 컬럼이 없으므로 해제 사실과
+    활성 여부가 어긋날 자리가 없다.
+    """
+    return (
+        select(InventoryHold.id)
+        .where(
+            InventoryHold.receipt_id == receipt_id,
+            InventoryHold.lifted_at.is_(None),
+        )
+        .exists()
+    )
 
 
 def find_sku_ids_by_codes(
@@ -56,6 +84,11 @@ def find_allocatable_quantity(session: Session, sku_id: uuid.UUID) -> int:
     기존 배정량을 뺀다. 빼지 않으면 이미 다른 요청이 가져간 수량이 다시 배정
     가능으로 보이고, 그것이 NBR-04가 금지하는 중복 배정의 입구가 된다.
 
+    사용 보류가 걸린 입고묶음은 제외한다. `lock_allocatable_buckets`와 같은 식을
+    쓰므로 두 곳의 자격 판정이 갈라지지 않는다. 다만 **이미 붙어 있는 배정은 이
+    수치에서 빠지는 것과 무관하게 유효하다** — 보류는 신규 배정을 막는 조건이고
+    기존 배정을 취소하는 사건이 아니다(AC-04).
+
     잠그지 않는다. 이것은 현황을 보여 주는 조회이고, 실제 배정은 버킷을 잠그는
     `lock_allocatable_buckets`를 쓴다. 조회 결과를 근거로 쓰기를 결정하면 읽은
     값과 쓸 때의 값이 달라질 수 있다.
@@ -66,8 +99,61 @@ def find_allocatable_quantity(session: Session, sku_id: uuid.UUID) -> int:
         ).where(
             StockPosition.sku_id == sku_id,
             StockPosition.qc_state == QC_STATE_PASSED,
+            ~active_hold_exists(StockPosition.receipt_id),
         )
     ).scalar_one()
+
+
+def receipt_exists(session: Session, receipt_id: uuid.UUID) -> bool:
+    """그런 입고묶음이 있는가.
+
+    보류·해제 판정이 쓴다. 없는 입고묶음에 보류를 걸면 FK가 거부해 담당자는 업무
+    사유 대신 서버 오류를 받고, 해제에서는 "그런 입고묶음이 없다"와 "보류가
+    없다"가 서로 다른 결론이므로 이 구분이 필요하다.
+    """
+    return session.execute(select(Receipt.id).where(Receipt.id == receipt_id)).first() is not None
+
+
+@dataclass(frozen=True)
+class ActiveHold:
+    """풀리지 않은 사용 보류 한 건의 업무 근거 (AC-10)."""
+
+    hold_id: uuid.UUID
+    reason: str
+    note: str | None
+    held_by: str
+    occurred_at: datetime
+
+
+def find_active_hold(session: Session, receipt_id: uuid.UUID) -> ActiveHold | None:
+    """입고묶음의 활성 보류. None이면 보류가 없다 (AC-10).
+
+    해제된 보류는 돌려주지 않는다. 과거 보류 이력은 지워지지 않고 남아 있지만,
+    "지금 이 재고를 쓸 수 있는가"를 묻는 질문의 답은 활성 보류뿐이다.
+
+    활성 보류가 하나임은 부분 유니크 인덱스가 보장하므로 여러 건을 다루지 않는다.
+    """
+    row = session.execute(
+        select(
+            InventoryHold.id,
+            InventoryHold.reason,
+            InventoryHold.note,
+            InventoryHold.held_by,
+            InventoryHold.occurred_at,
+        ).where(
+            InventoryHold.receipt_id == receipt_id,
+            InventoryHold.lifted_at.is_(None),
+        )
+    ).first()
+    if row is None:
+        return None
+    return ActiveHold(
+        hold_id=row[0],
+        reason=row[1],
+        note=row[2],
+        held_by=row[3],
+        occurred_at=row[4],
+    )
 
 
 @dataclass(frozen=True)
