@@ -6,6 +6,8 @@
 
 import hashlib
 import json
+import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -22,9 +24,11 @@ MAX_EXTERNAL_REQUEST_ID_LENGTH = 100
 MAX_SKU_CODE_LENGTH = 100
 MAX_RECIPIENT_NAME_LENGTH = 100
 MAX_RECIPIENT_PHONE_LENGTH = 40
-# 주소 컬럼은 Text라 DB 제한이 없다. 이 값은 과도한 입력을 막는 도메인 정책이며
-# 대응하는 컬럼 길이가 없다.
+MAX_REVISED_BY_LENGTH = 100
+# 주소·사유 컬럼은 Text라 DB 제한이 없다. 아래 두 값은 과도한 입력을 막는 도메인
+# 정책이며 대응하는 컬럼 길이가 없다.
 MAX_RECIPIENT_ADDRESS_LENGTH = 1000
+MAX_REVISION_REASON_LENGTH = 1000
 
 
 @dataclass(frozen=True)
@@ -177,3 +181,161 @@ def fingerprint(command: IntakeCommand) -> str:
     }
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ReviseLine:
+    """변경 후 이 SKU의 **총 수량**. 증감분이 아니다.
+
+    증감분을 받으면 같은 명령을 두 번 받을 때 수량이 두 배가 된다. 총 수량이면
+    재전송이 무해하다 — 차이가 0이므로 아무것도 바뀌지 않는다. 24-1이 전체 내용을
+    받아 fingerprint로 비교한 것과 같은 성격의 선택이다.
+    """
+
+    sku_code: str
+    quantity: int
+
+
+@dataclass(frozen=True)
+class ReviseCommand:
+    """권한 있는 판매사가 보낸 수량 변경 명령 (AC-03).
+
+    요청을 판매사+외부 요청 ID로 지목한다. 내부 요청 id가 아니다. 그 ID가 판매사
+    OMS가 소유한 식별자이며, 24-1이 내용 충돌을 CONFLICT로 거절할 때 "정식 리비전
+    명령으로만 바꿀 수 있다"고 안내한 그 경로이기 때문이다. 응답을 잃은 판매사는
+    내부 id를 모를 수 있지만 자기 외부 ID는 늘 안다.
+
+    권한 확인은 하지 않는다. 판매사별 변경 권한자는 R-05/06이 미확정이고 AC-35가
+    수동 확인을 전제하므로, 여기서는 `revised_by`를 기록만 하고 권한은 문서화된
+    가정으로 둔다.
+
+    기한 변경은 이 명령이 다루지 않는다. AC-23은 최초 기한을 보존하면서 유효
+    기한만 바꾸라고 요구하며 별도 명령이다. SKU 구성 변경도 아니다 — NBR-06은
+    취소 후 신규 요청으로 처리하라고 정했다.
+    """
+
+    seller_code: str
+    external_request_id: str
+    lines: tuple[ReviseLine, ...]
+    revised_by: str
+    reason: str
+    occurred_at: datetime
+
+
+def validate_revision(command: ReviseCommand) -> tuple[ValidationProblem, ...]:
+    """수량 변경 명령의 유효성을 판정한다 (AC-03).
+
+    현재 수량을 보지 않는다. 증감 어느 쪽인지는 조정 계층이 저장된 값과 비교해
+    알아내며, 이 함수는 "이 입력 자체가 성립하는가"만 답한다.
+
+    수량 0을 거절하는 것이 중요하다. 0은 그 SKU를 요청에서 빼는 것이고, NBR-06은
+    SKU 구성 변경을 취소 후 신규 요청으로 처리하라고 정했다. 허용하면 라인을 0으로
+    만들어 구성을 바꾸는 우회 경로가 생긴다.
+
+    사유를 필수로 받는다. AC-03의 확인할 업무 근거에 "구간별 수요/배정/감소 사유"가
+    있고, 증량인지 감량인지는 이 함수가 알 수 없으므로 조건을 걸지 않고 항상
+    요구한다. 사유 없는 수량 변경은 기록이 아니라 빈칸이다.
+    """
+    problems: list[ValidationProblem] = []
+
+    seller_code = normalize_text(command.seller_code)
+    if not seller_code:
+        problems.append(ValidationProblem("seller_code", "판매사 코드가 비어 있습니다"))
+    _check_length(problems, "seller_code", seller_code, MAX_SELLER_CODE_LENGTH)
+
+    external_request_id = normalize_text(command.external_request_id)
+    if not external_request_id:
+        problems.append(ValidationProblem("external_request_id", "외부 요청 ID가 비어 있습니다"))
+    _check_length(
+        problems, "external_request_id", external_request_id, MAX_EXTERNAL_REQUEST_ID_LENGTH
+    )
+
+    if not command.lines:
+        problems.append(ValidationProblem("lines", "변경할 품목이 없습니다"))
+
+    codes = [normalize_text(line.sku_code) for line in command.lines]
+    for index, (line, code) in enumerate(zip(command.lines, codes, strict=True)):
+        if not code:
+            problems.append(
+                ValidationProblem(f"lines[{index}].sku_code", "SKU 코드가 비어 있습니다")
+            )
+        _check_length(problems, f"lines[{index}].sku_code", code, MAX_SKU_CODE_LENGTH)
+
+        if line.quantity <= 0:
+            # NBR-06. 0은 감량이 아니라 구성 변경이다.
+            problems.append(
+                ValidationProblem(
+                    f"lines[{index}].quantity",
+                    "수량은 양수여야 합니다. 품목을 빼려면 요청을 취소하고 다시 접수해야 합니다",
+                )
+            )
+
+    # 같은 SKU가 두 번 오면 어느 수량이 최종인지 정해지지 않는다. uq_line_request_sku
+    # 때문에 라인 자체도 SKU당 하나다.
+    if len(set(codes)) != len(codes):
+        problems.append(ValidationProblem("lines", "같은 품목이 두 번 지정됐습니다"))
+
+    revised_by = normalize_text(command.revised_by)
+    if not revised_by:
+        problems.append(ValidationProblem("revised_by", "변경 담당자가 비어 있습니다"))
+    _check_length(problems, "revised_by", revised_by, MAX_REVISED_BY_LENGTH)
+
+    reason = normalize_text(command.reason)
+    if not reason:
+        problems.append(ValidationProblem("reason", "변경 사유가 비어 있습니다"))
+    _check_length(problems, "reason", reason, MAX_REVISION_REASON_LENGTH)
+
+    if command.occurred_at.tzinfo is None:
+        problems.append(ValidationProblem("occurred_at", "시간대가 없는 변경 시각입니다"))
+
+    return tuple(problems)
+
+
+@dataclass(frozen=True)
+class SegmentQuantity:
+    """수요 구간 하나의 FIFO 순번과 요청 수량.
+
+    배정량은 담지 않는다. 그것은 BC-04가 소유하는 사실이고 이 모듈은 알지 못한다.
+    미충족 수량은 두 값을 가진 쪽이 빼서 구한다.
+    """
+
+    segment_id: uuid.UUID
+    seq: int
+    quantity: int
+
+
+@dataclass(frozen=True)
+class SegmentReduction:
+    """한 수요 구간에서 줄일 수량."""
+
+    segment_id: uuid.UUID
+    quantity: int
+
+
+def plan_demand_reduction(
+    segments: Iterable[SegmentQuantity], shortfall: int
+) -> tuple[SegmentReduction, ...]:
+    """줄일 수량을 최신 구간부터 배분한다 (AC-03, D-01, POL-004).
+
+    증량 배분이 순번 오름차순인 것과 **정확히 반대**다. 그래야 "수량 감소는 가장
+    최근 추가분부터 줄인다"가 성립한다. 오래된 구간을 먼저 깎으면 선순위 수요가
+    사라지고, 그 자리를 후순위가 차지하게 되어 FIFO가 뒤집힌다.
+
+    배정 해제는 여기서 다루지 않는다. 구간 수량이 줄면 그 구간의 유효 배정이
+    남는 수량을 넘을 수 있고, 넘는 만큼을 푸는 것은 BC-04의 일이다. 이 함수는
+    수요가 얼마나 줄어드는지만 답한다.
+    """
+    remaining = shortfall
+    plan: list[SegmentReduction] = []
+
+    for segment in sorted(segments, key=lambda item: item.seq, reverse=True):
+        if remaining <= 0:
+            break
+        taken = min(remaining, segment.quantity)
+        if taken == 0:
+            # 이미 0으로 줄어든 구간이다. 행은 이력으로 남아 있으므로 지나간다.
+            continue
+        plan.append(SegmentReduction(segment_id=segment.segment_id, quantity=taken))
+        remaining -= taken
+
+    return tuple(plan)

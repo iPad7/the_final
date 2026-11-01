@@ -411,3 +411,20 @@ def record_ownership_review(session: Session, new: NewOwnershipReview) -> None:
             quantity=_arrived_quantity(session, command.receipt_id),
         )
     )
+
+
+def release_in_bucket(session: Session, bucket_id: uuid.UUID, quantity: int) -> None:
+    """버킷의 배정량을 줄인다 (AC-03, CB-03).
+
+    `reserve_in_bucket`의 역방향이다. 이것이 없으면 정당하게 풀린 수량이 버킷에
+    묶인 채 남아 다시 배정되지 않는다 — CB-03이 "정당 해제된 물량은 그 시점의
+    선순위 미충족 구간부터 고려한다"고 요구하는 재배정이 일어나지 않는다.
+
+    음수로 내려가면 ck_stock_allocated_within_quantity가 커밋을 거부한다. 도달하면
+    해제 계산이 배정량보다 많이 풀었다는 뜻이다.
+    """
+    session.execute(
+        update(StockPosition)
+        .where(StockPosition.id == bucket_id)
+        .values(allocated_quantity=StockPosition.allocated_quantity - quantity)
+    )

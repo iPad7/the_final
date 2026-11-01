@@ -97,8 +97,21 @@ def _resolve_sku(session: Session, command: AllocationRunCommand) -> uuid.UUID |
     return sku_id
 
 
-def run_allocation(session: Session, command: AllocationRunCommand) -> AllocationResult:
-    """이 판매사·품목의 미충족 수요에 적격 재고를 배정한다 (AC-03, AC-04).
+@dataclass(frozen=True)
+class AllocationTotals:
+    """배정 한 번의 결과 수치. 판정 어휘는 담지 않는다."""
+
+    allocated_quantity: int
+    unallocated_quantity: int
+    allocatable_quantity: int
+
+
+def allocate_sku(session: Session, sku_id: uuid.UUID) -> AllocationTotals:
+    """이 SKU의 미충족 수요에 적격 재고를 배정한다 (AC-03, AC-04).
+
+    코드 해석과 판정 어휘 없이 배정 자체만 한다. 수량 감소로 풀린 물량을 같은
+    트랜잭션에서 선순위부터 재고려해야 하므로(CB-03) 수량 변경 조정 계층도 이
+    함수를 쓴다.
 
     잠금 순서가 **guard → 버킷**이다. 이 순서를 모든 경로에서 똑같이 지켜야 한다.
 
@@ -115,15 +128,6 @@ def run_allocation(session: Session, command: AllocationRunCommand) -> Allocatio
     기존 예약·선순위 미충족 수요는 여기 있지만 HOLD는 24-4의 몫이다. 그래서
     AC-04는 이 증분에서 부분 충족이다.
     """
-    problems = validate_allocation_run(command)
-    if problems:
-        return AllocationResult(AllocationOutcome.REJECTED, problems=problems)
-
-    resolved = _resolve_sku(session, command)
-    if isinstance(resolved, AllocationResult):
-        return resolved
-    sku_id = resolved
-
     # ① 수요 큐를 직렬화한다. 이 SKU의 배정 판정은 한 번에 하나만 진행된다.
     lock_sku_queue(session, sku_id)
     # ② 적격 재고를 잠근다. 가용량을 읽은 뒤 예약하기까지 다른 배정이 끼어들지
@@ -155,13 +159,36 @@ def run_allocation(session: Session, command: AllocationRunCommand) -> Allocatio
     insert_allocations(session, sku_id, plan)
 
     just_allocated = sum(item.quantity for item in plan)
-    return AllocationResult(
-        outcome=(AllocationOutcome.APPLIED if just_allocated else AllocationOutcome.UNCHANGED),
+    return AllocationTotals(
         allocated_quantity=just_allocated,
         # 실행 전 수치에서 이번 배정분을 뺀다. 음수 미충족(초과 배정된 구간)은
         # 0으로 접어 합계가 왜곡되지 않게 한다.
         unallocated_quantity=sum(max(demand.outstanding, 0) for demand in demands) - just_allocated,
         allocatable_quantity=sum(supply.available for supply in supplies) - just_allocated,
+    )
+
+
+def run_allocation(session: Session, command: AllocationRunCommand) -> AllocationResult:
+    """배정 실행 명령을 처리한다 (AC-03, AC-04).
+
+    코드 해석과 판정 어휘만 담당하고, 배정 자체는 `allocate_sku`가 한다.
+    """
+    problems = validate_allocation_run(command)
+    if problems:
+        return AllocationResult(AllocationOutcome.REJECTED, problems=problems)
+
+    resolved = _resolve_sku(session, command)
+    if isinstance(resolved, AllocationResult):
+        return resolved
+
+    totals = allocate_sku(session, resolved)
+    return AllocationResult(
+        outcome=(
+            AllocationOutcome.APPLIED if totals.allocated_quantity else AllocationOutcome.UNCHANGED
+        ),
+        allocated_quantity=totals.allocated_quantity,
+        unallocated_quantity=totals.unallocated_quantity,
+        allocatable_quantity=totals.allocatable_quantity,
     )
 
 

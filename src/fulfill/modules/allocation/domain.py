@@ -169,3 +169,68 @@ def plan_allocations(
             break
 
     return tuple(plan)
+
+
+# 배정을 푼 사유. 24-3에서 일어나는 것은 수요 감소 하나뿐이다. 사후 불량·손실
+# 확정(D-09, NBR-13)과 요청 취소(POL-005)도 정당한 해제 사유이지만 각자의 증분에서
+# 추가한다. 값을 미리 늘려 두면 쓰이지 않는 분기가 생긴다.
+RELEASE_DEMAND_DECREASE = "DEMAND_DECREASE"
+
+RELEASE_REASONS = (RELEASE_DEMAND_DECREASE,)
+
+
+@dataclass(frozen=True)
+class ActiveAllocation:
+    """아직 유효한 배정 하나.
+
+    `active`는 배정 수량이 아니라 **아직 풀리지 않은** 수량이다. 부분 해제가
+    정상이므로 이미 푼 몫을 빼고 넘긴다.
+    """
+
+    allocation_id: uuid.UUID
+    bucket_id: uuid.UUID
+    active: int
+
+
+@dataclass(frozen=True)
+class PlannedRelease:
+    """배정 하나에서 풀 수량과 그 수량이 돌아갈 버킷."""
+
+    allocation_id: uuid.UUID
+    bucket_id: uuid.UUID
+    quantity: int
+
+
+def plan_releases(
+    allocations: Iterable[ActiveAllocation], excess: int
+) -> tuple[PlannedRelease, ...]:
+    """초과 배정분을 풀 계획을 세운다 (AC-03, CB-03).
+
+    수요 구간이 줄면 그 구간의 유효 배정이 남은 수량을 넘을 수 있다. 넘는 만큼만
+    푸는 것이 "정당하게 풀린 예약만 해제 가능"(CB-03)의 뜻이다. 더 풀면 줄이지
+    않은 수요의 배정을 빼앗는 것이 된다.
+
+    정렬하지 않는다. 어느 배정을 먼저 풀지는 어떤 문서도 정하지 않은 동순위 사이의
+    선택이므로 `plan_allocations`가 재고를 다루는 방식과 같다. 수요 순서(FIFO)와
+    감량 순서(최신 구간부터)는 규칙이므로 도메인이 직접 정렬하지만, 이것은 규칙이
+    아니다.
+    """
+    remaining = excess
+    plan: list[PlannedRelease] = []
+
+    for allocation in allocations:
+        if remaining <= 0:
+            break
+        taken = min(remaining, allocation.active)
+        if taken == 0:
+            continue
+        plan.append(
+            PlannedRelease(
+                allocation_id=allocation.allocation_id,
+                bucket_id=allocation.bucket_id,
+                quantity=taken,
+            )
+        )
+        remaining -= taken
+
+    return tuple(plan)

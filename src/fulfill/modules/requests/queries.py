@@ -10,20 +10,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from fulfill.modules.requests.domain import SegmentQuantity
 from fulfill.modules.requests.models import DemandSegment, FulfillmentRequest, RequestLine
-
-
-@dataclass(frozen=True)
-class SegmentQuantity:
-    """수요 구간 하나의 FIFO 순번과 요청 수량.
-
-    배정량은 담지 않는다. 그것은 BC-04가 소유하는 사실이고, 이 모듈은 알지 못한다.
-    미충족 수량은 두 값을 가진 쪽이 빼서 구한다.
-    """
-
-    segment_id: uuid.UUID
-    seq: int
-    quantity: int
 
 
 def list_demand_segments(session: Session, sku_id: uuid.UUID) -> tuple[SegmentQuantity, ...]:

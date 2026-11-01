@@ -16,6 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from fulfill.modules.allocation.domain import RELEASE_DEMAND_DECREASE
 from fulfill.shared.db import Base
 
 # requests·inventory가 각자 같은 상수를 들고 있다. 모듈 경계가 서로의 models를
@@ -63,6 +64,12 @@ class Allocation(Base):
     __tablename__ = "allocation"
     __table_args__ = (
         CheckConstraint("quantity > 0", name="ck_allocation_quantity_positive"),
+        # 초과 해제를 DB가 막는다. stock_position의 배정량 제약과 같은 수법이며,
+        # 배정보다 많이 풀면 줄이지 않은 수요의 몫을 빼앗는 것이 된다(CB-03).
+        CheckConstraint(
+            "released_quantity >= 0 AND released_quantity <= quantity",
+            name="ck_allocation_released_within_quantity",
+        ),
         CheckConstraint(
             f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
             name="ck_allocation_environment_class",
@@ -81,6 +88,14 @@ class Allocation(Base):
 
     quantity: Mapped[int] = mapped_column(Integer)
 
+    # 이 배정 중 정당하게 풀린 수량. 해제 사실의 원장은 allocation_release이고 이
+    # 컬럼은 그 합계다. 유효 배정은 `quantity - released_quantity`이며, 컬럼으로
+    # 두는 덕분에 그 값을 조인 없이 읽을 수 있다.
+    #
+    # 부분 해제가 정상이라 불린 값이 아니다. 배정 5개 중 수요가 2개 줄면 2만
+    # 풀린다.
+    released_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+
     # 시각이 하나뿐인 것이 입고·검수와 다른 점이다. 실도착은 창고에서 일어난 뒤
     # 입력되므로 발생과 기록이 갈렸지만, 배정은 이 쓰기 자체가 사건이다. 두
     # 컬럼으로 나누면 없는 구분을 꾸미게 된다.
@@ -89,6 +104,45 @@ class Allocation(Base):
     # 모두 같은 트랜잭션 시각을 갖고, 순서의 근거는 demand_segment.seq다
     # (20 §4: "단순 DB 생성시각으로 FIFO를 대체하지 않는다").
     allocated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
+
+
+class AllocationRelease(Base):
+    """배정을 정당하게 푼 사실 하나 (AC-03, CB-03).
+
+    별도 사실 테이블로 두는 이유가 두 가지다. 첫째, 부분 해제를 표현할 수 있다 —
+    배정 5개 중 2개만 푸는 것이 감량의 정상 경로이므로 배정 행에 "풀렸다" 깃발을
+    세우는 방식으로는 담기지 않는다. 둘째, 이력이 덮이지 않는다. AC-36이 과거의
+    결정을 삭제·소급 수정하지 말라고 요구한다.
+
+    24-2의 qc_decision·ownership_review와 같은 구조다. 변하는 합계는 배정 행에,
+    변하지 않는 사실은 여기에 쌓인다.
+    """
+
+    __tablename__ = "allocation_release"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_release_quantity_positive"),
+        CheckConstraint(
+            f"reason IN ('{RELEASE_DEMAND_DECREASE}')",
+            name="ck_release_reason",
+        ),
+        CheckConstraint(
+            f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
+            name="ck_release_environment_class",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    allocation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("allocation.id"))
+    quantity: Mapped[int] = mapped_column(Integer)
+
+    # 정당성의 근거다. 배정과 달리 해제는 "왜 풀었는가"가 판정의 일부이므로
+    # (CB-03의 "정당 해제된 물량만") 사유 없이 기록할 수 없다.
+    reason: Mapped[str] = mapped_column(String(30))
+
+    released_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)

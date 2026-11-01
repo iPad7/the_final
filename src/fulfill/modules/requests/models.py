@@ -117,7 +117,15 @@ class DemandSegment(Base):
         # FIFO 순번 중복을 DB가 거부한다. 순번 발급에 버그가 생겨도 역전된 큐가
         # 데이터로 남지 않는다.
         UniqueConstraint("sku_id", "seq", name="uq_segment_sku_seq"),
-        CheckConstraint("quantity > 0", name="ck_segment_quantity_positive"),
+        # > 0이 아니라 >= 0이다. 감량이 증량 구간을 전부 지우면 그 구간은 0이 된다.
+        # 행을 삭제할 수는 없다 — allocation이 이 구간을 참조하고 있고, 지우면
+        # AC-36이 요구하는 배정 이력을 잃는다. 24-2에서 미검수 버킷이 0으로 남는
+        # 것과 같은 이유이고 같은 해법이다.
+        #
+        # request_line.quantity는 여전히 > 0이다. 라인이 0이 되는 것은 감량이
+        # 아니라 SKU 구성 변경이며, NBR-06이 취소 후 신규 요청으로 처리하라고
+        # 정했다. 두 제약이 다른 것은 의도다.
+        CheckConstraint("quantity >= 0", name="ck_segment_quantity_not_negative"),
         CheckConstraint(
             f"kind IN ('{DEMAND_KIND_ORIGINAL}', '{DEMAND_KIND_INCREASE}')",
             name="ck_segment_kind",
@@ -135,3 +143,56 @@ class DemandSegment(Base):
     quantity: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RequestRevision(Base):
+    """수량 변경 사실 하나. 바뀐 라인마다 한 행이다 (AC-03).
+
+    19 §3이 RequestRevision을 Immutable fact로 분류했다. 수요 구간과 라인 수량은
+    갱신되지만 "누가 언제 무엇을 왜 바꿨는가"는 여기 쌓인다. 24-2의 qc_decision·
+    ownership_review와 같은 구조다 — 변하는 상태와 변하지 않는 사실을 나눈다.
+
+    이전 수량을 함께 적는다. 현재 수량만 알면 무엇이 바뀌었는지 알 수 없고,
+    AC-03이 "요청 및 변경 접수 순서·구간별 수요/배정/감소 사유"를 업무 근거로
+    요구한다.
+
+    기한 변경은 여기 들어오지 않는다. AC-23이 최초 기한 보존을 따로 요구하며
+    별도 사건이다.
+    """
+
+    __tablename__ = "request_revision"
+    __table_args__ = (
+        CheckConstraint("previous_quantity > 0", name="ck_revision_previous_quantity_positive"),
+        # 0으로 줄이는 것은 SKU 구성 변경이다(NBR-06). 도메인이 거절하지만 DB도
+        # 막아, 다른 경로가 생겨도 그 상태가 데이터로 남지 않는다.
+        CheckConstraint("new_quantity > 0", name="ck_revision_new_quantity_positive"),
+        # 바뀌지 않은 변경은 사실이 아니다. 조정 계층이 차이가 0인 라인을
+        # 건너뛰므로 여기 도달하면 버그다.
+        CheckConstraint("previous_quantity <> new_quantity", name="ck_revision_quantity_changed"),
+        CheckConstraint(
+            f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
+            name="ck_revision_environment_class",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # 한 변경 명령이 바꾼 라인들을 묶는다. FK가 아니다 — 묶음 자체는 별도 객체가
+    # 아니고, TX-02가 요구하는 원자성은 트랜잭션이 보장한다. 이 값은 나중에
+    # "그때 그 명령이 무엇을 바꿨는가"를 되읽기 위한 것이다.
+    group_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("fulfillment_request.id"))
+    line_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("request_line.id"))
+
+    previous_quantity: Mapped[int] = mapped_column(Integer)
+    new_quantity: Mapped[int] = mapped_column(Integer)
+
+    # 권한 확인은 하지 않는다. 판매사별 변경 권한자는 R-05/06이 미확정이고 AC-35가
+    # 수동 확인을 전제하므로, 누가 바꿨다고 주장했는지만 기록한다.
+    revised_by: Mapped[str] = mapped_column(String(100))
+    reason: Mapped[str] = mapped_column(Text)
+
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
