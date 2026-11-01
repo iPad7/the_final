@@ -8,7 +8,6 @@
 import threading
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -21,27 +20,11 @@ from fulfill.modules.requests.domain import IntakeCommand
 from fulfill.modules.requests.repository import ExistingRequest
 from fulfill.shared.db import unit_of_work
 from fulfill.workflows.accept_request import IntakeOutcome, IntakeResult, accept_request
+from tests.concurrency.harness import WORKERS, run_together
 
 pytestmark = pytest.mark.concurrency
 
 RECEIVED_AT = datetime(2026, 10, 28, 1, 30, tzinfo=UTC)
-WORKERS = 4
-
-
-def _run_together(tasks: list[Callable[[], IntakeResult]]) -> list[IntakeResult]:
-    """모든 작업을 같은 순간에 출발시킨다.
-
-    출발을 맞추지 않으면 순차 실행이 되어 경합이 일어나지 않고, 테스트가 허위로
-    통과한다.
-    """
-    barrier = threading.Barrier(len(tasks))
-
-    def run(task: Callable[[], IntakeResult]) -> IntakeResult:
-        barrier.wait()
-        return task()
-
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        return [future.result() for future in [pool.submit(run, t) for t in tasks]]
 
 
 def test_같은_요청을_동시에_여러_번_보내도_하나만_생긴다(
@@ -53,7 +36,7 @@ def test_같은_요청을_동시에_여러_번_보내도_하나만_생긴다(
         with unit_of_work() as session:
             return accept_request(session, base_command, RECEIVED_AT)
 
-    results = _run_together([accept] * WORKERS)
+    results = run_together([accept] * WORKERS)
 
     outcomes = [result.outcome for result in results]
     assert outcomes.count(IntakeOutcome.APPLIED) == 1
@@ -164,7 +147,7 @@ def test_같은_SKU에_동시_수요가_생겨도_순번이_중복되거나_빠�
 
         return run
 
-    results = _run_together([accept(index) for index in range(WORKERS)])
+    results = run_together([accept(index) for index in range(WORKERS)])
 
     assert all(result.outcome is IntakeOutcome.APPLIED for result in results)
 

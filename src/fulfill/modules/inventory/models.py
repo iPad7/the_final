@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -303,6 +304,20 @@ class StockPosition(Base):
         # 그리고 이 제약이 과검수를 막는다. 실도착 590개에 합격 600개를 판정하려면
         # PENDING을 음수로 만들어야 하므로 DB가 거부한다.
         CheckConstraint("quantity >= 0", name="ck_stock_quantity_not_negative"),
+        # 이중 배정을 DB가 막는다. CB-02가 "가장 중요한 재고·배정 불변조건"이라
+        # 부른 것을 애플리케이션 코드 하나에 맡기지 않는다.
+        #
+        # "모든 배정의 합이 재고를 넘지 않는다"는 원래 집계 조건이라 CHECK로 쓸 수
+        # 없는 모양이다. 갱신되는 합계 컬럼을 두면 그것이 행 조건으로 번역된다.
+        # 24-2에서 과검수를 quantity >= 0으로 막은 것과 같은 수법이다.
+        #
+        # quantity를 줄이는 쪽도 이 제약에 걸린다. 손실 확정으로 실물이 줄면 먼저
+        # 그 요청의 배정을 조정해야 하며(D-09, NBR-13), 배정을 남겨 둔 채 재고만
+        # 지우는 순서는 거부된다.
+        CheckConstraint(
+            "allocated_quantity >= 0 AND allocated_quantity <= quantity",
+            name="ck_stock_allocated_within_quantity",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -316,3 +331,16 @@ class StockPosition(Base):
     # 추가 상태 없이 나온다. 불합격품의 격리 구역도 이 컬럼에 담긴다.
     location_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer)
+
+    # 이 버킷 수량 중 이미 어떤 수요 구간에 독점 배정된 양. 배정 사실의 원장은
+    # allocation 테이블이고 이 컬럼은 그 합계다. 둘이 어긋나면 깨지는 불변식
+    # 테스트를 둔다(24-2의 "버킷 합 == 실도착 수량"과 같은 성격이다).
+    #
+    # 19 §3이 StockPosition을 "수량과 사용가능 여부"로 정의하므로 이 컬럼은
+    # inventory의 소유물이다. allocation 모듈은 inventory가 공개한 함수를 통해서만
+    # 이 값을 바꾼다.
+    #
+    # HOLD는 여기 더하지 않는다. CB-04가 "onHold+allocated+picked를 단순 합산하면
+    # 중복 계산된다"고 경고했고, 이미 배정된 물량도 사용 보류일 수 있다. HOLD는
+    # 별 축이며 24-4의 일이다.
+    allocated_quantity: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))

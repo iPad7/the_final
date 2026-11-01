@@ -1,6 +1,6 @@
 # THE FINAL — Claude Code Project Instructions
 
-> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-2 입고·부분 QC 완료**. 다음은 24-3 FIFO 배정·실PG 동시성.
+> Status: portfolio-first project / 첫 Vertical Slice(24단계) 중 **24-3 FIFO 배정·실PG 동시성 완료**. 다음은 24-4 피킹 준비 판정.
 > 이 파일은 Claude Code의 **작업 방식**을 정의합니다. 업무 규칙·요구사항·아키텍처 상세는 Notion 원본을 따르며 여기에 복제하지 않습니다.
 
 ## 1. 프로젝트 목적
@@ -15,15 +15,15 @@
 
 | 역할 | 문서 |
 |---|---|
-| 업무 규칙 | 04_BUSINESS_RULES (NBR-01~49), 03 확정 정책 원장 (D/G/POL) |
-| 제품 범위·판정 | 13_MVP_SCOPE v1.0, 05_BUSINESS_REQUIREMENTS (REQ-01~36), 15_ACCEPTANCE_CRITERIA (AC-01~36, CT-01~05) |
-| 기술 구조 | ENGINEERING_BASELINE v1.0, 23_ARCHITECTURE_ADRS (ADR23-01~09) |
+| 업무 규칙 | 04_BUSINESS_RULES (NBR-01 ~ 49), 03 확정 정책 원장 (D/G/POL) |
+| 제품 범위·판정 | 13_MVP_SCOPE v1.0, 05_BUSINESS_REQUIREMENTS (REQ-01 ~ 36), 15_ACCEPTANCE_CRITERIA (AC-01 ~ 36, CT-01 ~ 05) |
+| 기술 구조 | ENGINEERING_BASELINE v1.0, 23_ARCHITECTURE_ADRS (ADR23-01 ~ 09) |
 | 결정 근거 | Decision Log DB |
 | 진행 상태 | Project Tasks DB (원본) |
-| 미확정 의존성 | Operating Dependencies DB (R-01~09) |
-| 과거 맥락 | 90 · 이전 문서 보관함 (14 용어·생명주기, 18~22 상세 설계, Validation Lab 07~12). 현재 기준선 아님 |
+| 미확정 의존성 | Operating Dependencies DB (R-01 ~ 09) |
+| 과거 맥락 | 90 · 이전 문서 보관함 (14 용어·생명주기, 18 ~ 22 상세 설계, Validation Lab 07 ~ 12). 현재 기준선 아님 |
 
-- 08~12의 수치(420분, 200포장물, 17:15, Asia/Tokyo)는 과거 일본형 가상값입니다. 국내 실측·계약값으로 쓰지 않습니다.
+- 08 ~ 12의 수치(420분, 200포장물, 17:15, Asia/Tokyo)는 과거 일본형 가상값입니다. 국내 실측·계약값으로 쓰지 않습니다.
 - 문서 간 충돌을 발견하면 **어느 문서의 어떤 내용이 충돌하는지** 보고하고 임의로 해결하지 않습니다. 기준: NBR=규칙, REQ/AC=범위·판정, ENGINEERING_BASELINE/23=기술 구조, Decision Log=결정 근거.
 - Notion 문서·DB는 승인 없이 수정하지 않습니다.
 
@@ -114,20 +114,17 @@
 
 ## 7. 단계 규칙
 
-- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0·24-1·24-2는 완료**입니다. 다음 작업은 24-3입니다.
-  - 24-0: FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과
-  - 24-1: 요청 접수와 동일 요청 멱등. 유니크 제약 + SAVEPOINT 복구 경로를 실PG로 검증
-  - 24-2: 예정/실도착 구분, 부분 QC, 소유자 미확인 입고. 재고는 동질 버킷 `(sku, receipt, qc_state, location)`이며 검수는 버킷 간 수량 이동이라 입고 수량이 보존됩니다
-  - 24-0 골격(uv, FastAPI health, PostgreSQL, Alembic, pytest+Testcontainers, CI)
-  - 24-1 요청 접수·멱등 (AC-01/02)
-  - 24-2 입고·QC (AC-06~08)
-  - 24-3 FIFO 배정·실PG 동시성 (AC-03/04)
-  - 24-4 피킹 준비 판정 (AC-05/09)
+- 현재 기준선은 Project Tasks의 **24 · 첫 Vertical Slice**이며 **24-0 ~ 24-3은 완료**입니다. 다음 작업은 24-4입니다.
+  - **24-0 완료** — 골격: uv, FastAPI health, PostgreSQL compose, Alembic, pytest+Testcontainers, GitHub Actions CI 통과
+  - **24-1 완료** — 요청 접수·동일 요청 멱등 (AC-01/02). 유니크 제약 + SAVEPOINT 복구 경로를 실PG로 검증
+  - **24-2 완료** — 입고·부분 QC·소유자 미확인 입고 (AC-06 ~ 08). 재고는 동질 버킷 `(sku, receipt, qc_state, location)`이며 검수는 버킷 간 수량 이동이라 입고 수량이 보존됩니다
+  - **24-3 완료** — FIFO 배정·수량 증감·실PG 동시성 (AC-03, AC-04 부분). 배정은 `(수요 구간, 재고 버킷)` 쌍에 붙은 수량이고, 이중 배정은 `stock_position.allocated_quantity`의 CHECK가 막습니다. 같은 SKU의 수요·배정·수량 변경은 모두 guard 행 하나를 잠그고 직렬화됩니다. 증량은 새 후순위 구간, 감량은 최신 구간부터이며 풀린 물량은 같은 트랜잭션에서 선순위로 재배정됩니다
+  - 24-4 피킹 준비 판정 (AC-05/09). **AC-04의 HOLD 축이 여기 남아 있습니다** — 24-3은 이중 배정과 부분/미확보 구분까지만 충족했습니다
   - 24-5 DTO·ERD·import 검사·실패 주입
 - 보고·계획·패킹·집하 전체 구현과 reporting 서비스 분리는 24단계 범위 밖입니다.
 - Project Tasks의 진행 상태는 실제 근거가 있을 때만, 수정안을 보여 드리고 승인받은 뒤 갱신합니다.
 - **ADR23-05(guard row + FOR UPDATE)는 실제 PostgreSQL 경합 테스트 결과가 나오기 전까지 '검토 중'을 유지합니다.**
-- **R-01~09는 완료로 표시하지 않습니다.** 포트폴리오 범위에서는 "문서화된 가정"으로 다루고 구현을 막는 관문으로 쓰지 않습니다.
+- **R-01 ~ 09는 완료로 표시하지 않습니다.** 포트폴리오 범위에서는 "문서화된 가정"으로 다루고 구현을 막는 관문으로 쓰지 않습니다.
 
 ## 8. 테스트·문서·작업 안전
 
@@ -135,7 +132,9 @@
 - 동시성·트랜잭션 검증은 실제 PostgreSQL(Testcontainers)에서 합니다. SQLite 결과로 FIFO 경쟁 합격을 주장하지 않습니다.
 - 변경 관련 테스트부터 실행하고 가능하면 전체 검증을 수행합니다.
 - 마이그레이션, 대량 수정, 삭제처럼 되돌리기 어려운 작업은 영향과 복구 방법을 먼저 보고합니다.
-- **`alembic revision --autogenerate` 결과를 그대로 쓰지 않습니다.** 생성본을 읽고 `upgrade → downgrade → upgrade` 왕복을 실제 DB에서 확인합니다. autogenerate는 객체별로 명령을 나열할 뿐 "새 테이블이 기존 테이블의 새 제약에 의존한다"는 관계를 모르므로 순서가 틀릴 수 있습니다(24-2에서 두 번 발생). 모델이 맞다는 것과 마이그레이션이 맞다는 것은 다른 사실입니다.
+- **`alembic revision --autogenerate` 결과를 그대로 쓰지 않습니다.** 생성본을 읽고 `upgrade → downgrade → upgrade` 왕복을 실제 DB에서 확인하고, 걸렸어야 할 제약이 실제로 존재하는지 `pg_constraint`로 대조합니다. 모델이 맞다는 것과 마이그레이션이 맞다는 것은 다른 사실입니다.
+  - **순서가 틀릴 수 있습니다.** 객체별로 명령을 나열할 뿐 "새 테이블이 기존 테이블의 새 제약에 의존한다"는 관계를 모릅니다(24-2에서 두 번 발생). 적용할 때 오류로 드러납니다.
+  - **기존 테이블의 CHECK 제약은 추가도 변경도 감지하지 않습니다**(24-3에서 세 번 발생). 이쪽이 더 위험합니다 — 생성본이 조용히 통과하고, 빠진 제약은 그 제약이 필요한 입력이 들어오는 순간에만 드러납니다. 컬럼을 추가하거나 CHECK 식을 바꿀 때는 생성본에 그 제약이 있는지 직접 확인합니다.
 - 중요한 결정이 바뀌면 관련 Notion 문서·Decision Log와 저장소 `docs/adr/`의 수정안을 제시합니다. 승인 없이 조용히 고치지 않습니다.
 - 불필요한 주석, 중복 문서, 과잉 추상화를 만들지 않습니다.
 

@@ -9,6 +9,7 @@ include_external_packages = True
 name = domain 계층은 웹 프레임워크와 DB에 의존하지 않는다
 type = forbidden
 source_modules =
+    fulfill.modules.allocation.domain
     fulfill.modules.inventory.domain
     fulfill.modules.requests.domain
 forbidden_modules =

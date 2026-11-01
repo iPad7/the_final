@@ -12,6 +12,9 @@ from sqlalchemy.sql.expression import FromClause
 
 import fulfill.modules
 from fulfill.metadata import REGISTERED_MODEL_MODULES
+from fulfill.modules.allocation.models import (
+    ENVIRONMENT_SIMULATION as ALLOCATION_ENVIRONMENT_SIMULATION,
+)
 from fulfill.modules.inventory.domain import (
     MAX_CONFIRMED_BY_LENGTH,
     MAX_DECIDED_BY_LENGTH,
@@ -32,13 +35,14 @@ from fulfill.modules.requests.domain import (
     MAX_EXTERNAL_REQUEST_ID_LENGTH,
     MAX_RECIPIENT_NAME_LENGTH,
     MAX_RECIPIENT_PHONE_LENGTH,
+    MAX_REVISED_BY_LENGTH,
     MAX_SELLER_CODE_LENGTH,
     MAX_SKU_CODE_LENGTH,
 )
 from fulfill.modules.requests.models import (
     ENVIRONMENT_SIMULATION as REQUESTS_ENVIRONMENT_SIMULATION,
 )
-from fulfill.modules.requests.models import FulfillmentRequest
+from fulfill.modules.requests.models import FulfillmentRequest, RequestRevision
 from fulfill.modules.seller_contracts.models import Seller
 
 
@@ -63,6 +67,7 @@ def test_도메인_길이_상한이_컬럼_길이와_일치한다() -> None:
         _varchar_length(FulfillmentRequest.__table__, "recipient_phone")
         == MAX_RECIPIENT_PHONE_LENGTH
     )
+    assert _varchar_length(RequestRevision.__table__, "revised_by") == MAX_REVISED_BY_LENGTH
     assert _varchar_length(Seller.__table__, "code") == MAX_SELLER_CODE_LENGTH
     assert _varchar_length(Sku.__table__, "code") == MAX_SKU_CODE_LENGTH
 
@@ -76,9 +81,10 @@ def test_입고_도메인_길이_상한이_컬럼_길이와_일치한다() -> No
 
 
 def test_환경_구분_값이_모듈_사이에서_일치한다() -> None:
-    # 모듈 간 ORM import가 금지돼 두 모듈이 같은 문자열을 따로 정의한다. 어긋나면
-    # 한쪽 테이블만 SIMULATION을 허용하게 되어 ADR23-08의 강제가 반쪽이 된다.
+    # 모듈 간 ORM import가 금지돼 세 모듈이 같은 문자열을 따로 정의한다. 어긋나면
+    # 그 테이블만 SIMULATION을 허용하게 되어 ADR23-08의 강제가 반쪽이 된다.
     assert INVENTORY_ENVIRONMENT_SIMULATION == REQUESTS_ENVIRONMENT_SIMULATION
+    assert ALLOCATION_ENVIRONMENT_SIMULATION == REQUESTS_ENVIRONMENT_SIMULATION
 
 
 def test_모든_모듈의_models가_metadata에_등록돼_있다() -> None:

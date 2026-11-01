@@ -25,6 +25,19 @@ def find_sku_ids_by_codes(
     return {code: sku_id for code, sku_id in rows}
 
 
+def find_sku_codes_by_ids(session: Session, sku_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """SKU id를 사람이 읽을 코드로 되돌린다.
+
+    `find_sku_ids_by_codes`의 역방향이다. 다른 모듈이 들고 있는 sku_id를 화면이나
+    응답에 보여 줄 때 쓴다. Sku는 BC-03의 소유이므로 이 변환을 다른 모듈이 직접
+    할 수 없다.
+
+    판매사로 좁히지 않는다. id는 이미 판매사까지 특정하므로 추가 조건이 필요 없다.
+    """
+    rows = session.execute(select(Sku.id, Sku.code).where(Sku.id.in_(list(sku_ids)))).all()
+    return {sku_id: code for sku_id, code in rows}
+
+
 def find_allocatable_quantity(session: Session, sku_id: uuid.UUID) -> int:
     """이 SKU에서 신규 배정 자격이 있는 수량 (AC-07).
 
@@ -36,15 +49,21 @@ def find_allocatable_quantity(session: Session, sku_id: uuid.UUID) -> int:
     애초에 보이지 않는다(AC-08). 상태를 컬럼으로 뒀다면 세 조건을 모두 써야 했고,
     하나를 빠뜨리면 불량품이 배정 가능으로 계산됐을 것이다.
 
-    위치를 조건에 넣지 않는다. NBR-12는 QC 합격 후 위치가 미확정이어도 배정은
+    위치를 조건에 넣지 않는다. NBR-12는 QC 합격 후 위치가 미정이어도 배정은
     가능하다고 요구하므로, 여기서 위치를 거르면 AC-09를 위반한다. 위치 관문은
     피킹 판정의 일이다.
 
-    아직 기존 배정량을 빼지 않는다. 배정은 24-3이 도입하므로 지금은 적격 물량만
-    답한다.
+    기존 배정량을 뺀다. 빼지 않으면 이미 다른 요청이 가져간 수량이 다시 배정
+    가능으로 보이고, 그것이 NBR-04가 금지하는 중복 배정의 입구가 된다.
+
+    잠그지 않는다. 이것은 현황을 보여 주는 조회이고, 실제 배정은 버킷을 잠그는
+    `lock_allocatable_buckets`를 쓴다. 조회 결과를 근거로 쓰기를 결정하면 읽은
+    값과 쓸 때의 값이 달라질 수 있다.
     """
     return session.execute(
-        select(func.coalesce(func.sum(StockPosition.quantity), 0)).where(
+        select(
+            func.coalesce(func.sum(StockPosition.quantity - StockPosition.allocated_quantity), 0)
+        ).where(
             StockPosition.sku_id == sku_id,
             StockPosition.qc_state == QC_STATE_PASSED,
         )

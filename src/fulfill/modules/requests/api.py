@@ -11,10 +11,17 @@ from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from fulfill.modules.requests.domain import IntakeCommand, Recipient, RequestedLine
+from fulfill.modules.requests.domain import (
+    IntakeCommand,
+    Recipient,
+    RequestedLine,
+    ReviseCommand,
+    ReviseLine,
+)
 from fulfill.shared.db import unit_of_work
 from fulfill.shared.http import to_camel_path
 from fulfill.workflows.accept_request import IntakeOutcome, IntakeResult, accept_request
+from fulfill.workflows.revise_demand import RevisionOutcome, revise_demand
 
 
 class _Payload(BaseModel):
@@ -140,3 +147,90 @@ def accept_fulfillment_request(payload: IntakePayload, response: Response) -> In
 
     response.status_code = _STATUS_BY_OUTCOME[result.outcome]
     return _to_response(result)
+
+
+# APPLIED가 201인 이유는 변경 사실 행이 새로 생기기 때문이다. UNCHANGED를 같은
+# 200으로 두면 판매사가 상태코드만으로 적용 여부를 구분할 수 없게 되는데, 24-1의
+# 재전달에서 같은 이유로 두 코드를 갈라 놨다.
+_STATUS_BY_REVISION_OUTCOME = {
+    RevisionOutcome.APPLIED: status.HTTP_201_CREATED,
+    RevisionOutcome.UNCHANGED: status.HTTP_200_OK,
+    RevisionOutcome.REJECTED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+}
+
+
+class ReviseLinePayload(_Payload):
+    """변경 후 이 SKU의 총 수량. 증감분이 아니다.
+
+    증감분을 받으면 재전송이 수량을 두 배로 만든다. 총 수량이면 같은 명령을 두 번
+    받아도 두 번째는 UNCHANGED로 끝난다.
+    """
+
+    sku_code: str
+    quantity: int
+
+
+class RevisionPayload(_Payload):
+    """권한 있는 판매사가 보내는 수량 변경 명령.
+
+    요청을 판매사+외부 요청 ID로 지목한다. 내부 요청 id가 아니다. 24-1이 내용
+    충돌을 CONFLICT로 거절할 때 "정식 리비전 명령으로만 바꿀 수 있다"고 안내한
+    경로이며, 응답을 잃은 판매사는 내부 id를 모를 수 있지만 자기 외부 ID는 안다.
+    """
+
+    seller_code: str
+    external_request_id: str
+    lines: list[ReviseLinePayload]
+    revised_by: str
+    reason: str
+    occurred_at: datetime
+
+
+class RevisionResponse(_Payload):
+    """수량 변경 판정 응답.
+
+    풀린 수량과 재배정된 수량을 나눠 담는다. 합치면 "줄인 만큼 풀린 것"과 "다른
+    요청으로 옮겨 간 것"을 구분할 수 없다.
+    """
+
+    outcome: RevisionOutcome
+    request_id: uuid.UUID | None = None
+    released_quantity: int = 0
+    reallocated_quantity: int = 0
+    problems: list[ProblemPayload] = []
+
+
+@router.post("/fulfillment-request-revisions")
+def revise_fulfillment_request(payload: RevisionPayload, response: Response) -> RevisionResponse:
+    """접수된 요청의 SKU 수량을 변경한다 (AC-03).
+
+    증량은 변경 시점의 새 FIFO 구간이 되고, 감량은 최신 구간부터 줄어든다. 감량으로
+    풀린 물량은 같은 트랜잭션에서 그 시점의 선순위부터 다시 배정된다(CB-03).
+    """
+    with unit_of_work() as session:
+        result = revise_demand(
+            session,
+            ReviseCommand(
+                seller_code=payload.seller_code,
+                external_request_id=payload.external_request_id,
+                lines=tuple(
+                    ReviseLine(sku_code=line.sku_code, quantity=line.quantity)
+                    for line in payload.lines
+                ),
+                revised_by=payload.revised_by,
+                reason=payload.reason,
+                occurred_at=payload.occurred_at,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_REVISION_OUTCOME[result.outcome]
+    return RevisionResponse(
+        outcome=result.outcome,
+        request_id=result.request_id,
+        released_quantity=result.released_quantity,
+        reallocated_quantity=result.reallocated_quantity,
+        problems=[
+            ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
+            for problem in result.problems
+        ],
+    )
