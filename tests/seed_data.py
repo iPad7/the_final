@@ -8,8 +8,11 @@ SKU_Q = "SKU-Q"
 # 자식 테이블부터 지운다. FK 때문에 순서가 중요하고, 직전 테스트가 남긴 요청이
 # 멱등 판정에 끼어들면 결과가 뒤바뀐다.
 TABLES_IN_DELETE_ORDER = (
-    # 배정이 수요 구간·재고 버킷·품목을 모두 참조하므로 가장 먼저 지운다.
+    # 해제가 배정을, 배정이 수요 구간·재고 버킷·품목을 참조하므로 가장 먼저 지운다.
+    "allocation_release",
     "allocation",
+    # 변경 사실은 요청과 라인 둘 다 참조한다.
+    "request_revision",
     "demand_segment",
     "request_line",
     "fulfillment_request",

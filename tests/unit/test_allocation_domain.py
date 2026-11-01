@@ -9,11 +9,14 @@ DB 없이 돌아간다. 배분이 순수 함수인 덕분이고, import 계약�
 import uuid
 
 from fulfill.modules.allocation.domain import (
+    ActiveAllocation,
     AllocationRunCommand,
     DemandSlot,
     PlannedAllocation,
+    PlannedRelease,
     SupplySlot,
     plan_allocations,
+    plan_releases,
     validate_allocation_run,
 )
 
@@ -175,3 +178,39 @@ def test_판매사나_품목이_비면_배정_명령을_거절한다() -> None:
     problems = validate_allocation_run(AllocationRunCommand("  ", ""))
 
     assert {problem.field for problem in problems} == {"seller_code", "sku_code"}
+
+
+# 버킷 두 곳에서 받은 배정 하나씩. 해제는 받은 순서대로 소진된다.
+FROM_FIRST_BUCKET = ActiveAllocation(allocation_id=_id(10), bucket_id=_id(100), active=2)
+FROM_SECOND_BUCKET = ActiveAllocation(allocation_id=_id(11), bucket_id=_id(200), active=3)
+
+
+def test_초과분만큼만_해제한다() -> None:
+    """CB-03: 정당하게 풀린 예약만 해제 가능하다.
+
+    더 풀면 줄이지 않은 수요의 배정을 빼앗는 것이 된다.
+    """
+    plan = plan_releases((FROM_FIRST_BUCKET, FROM_SECOND_BUCKET), excess=1)
+
+    assert plan == (PlannedRelease(allocation_id=_id(10), bucket_id=_id(100), quantity=1),)
+
+
+def test_배정_하나로_부족하면_다음_배정까지_해제한다() -> None:
+    plan = plan_releases((FROM_FIRST_BUCKET, FROM_SECOND_BUCKET), excess=4)
+
+    assert plan == (
+        PlannedRelease(allocation_id=_id(10), bucket_id=_id(100), quantity=2),
+        PlannedRelease(allocation_id=_id(11), bucket_id=_id(200), quantity=2),
+    )
+
+
+def test_이미_전부_풀린_배정은_지나간다() -> None:
+    # 배정 행은 이력으로 남으므로 유효 수량 0인 행이 존재한다.
+    spent = ActiveAllocation(allocation_id=_id(12), bucket_id=_id(300), active=0)
+    plan = plan_releases((spent, FROM_FIRST_BUCKET), excess=1)
+
+    assert plan == (PlannedRelease(allocation_id=_id(10), bucket_id=_id(100), quantity=1),)
+
+
+def test_풀_것이_없으면_빈_계획이_나온다() -> None:
+    assert plan_releases((FROM_FIRST_BUCKET,), excess=0) == ()

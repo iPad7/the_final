@@ -35,13 +35,14 @@ from fulfill.modules.requests.domain import (
     MAX_EXTERNAL_REQUEST_ID_LENGTH,
     MAX_RECIPIENT_NAME_LENGTH,
     MAX_RECIPIENT_PHONE_LENGTH,
+    MAX_REVISED_BY_LENGTH,
     MAX_SELLER_CODE_LENGTH,
     MAX_SKU_CODE_LENGTH,
 )
 from fulfill.modules.requests.models import (
     ENVIRONMENT_SIMULATION as REQUESTS_ENVIRONMENT_SIMULATION,
 )
-from fulfill.modules.requests.models import FulfillmentRequest
+from fulfill.modules.requests.models import FulfillmentRequest, RequestRevision
 from fulfill.modules.seller_contracts.models import Seller
 
 
@@ -66,6 +67,7 @@ def test_도메인_길이_상한이_컬럼_길이와_일치한다() -> None:
         _varchar_length(FulfillmentRequest.__table__, "recipient_phone")
         == MAX_RECIPIENT_PHONE_LENGTH
     )
+    assert _varchar_length(RequestRevision.__table__, "revised_by") == MAX_REVISED_BY_LENGTH
     assert _varchar_length(Seller.__table__, "code") == MAX_SELLER_CODE_LENGTH
     assert _varchar_length(Sku.__table__, "code") == MAX_SKU_CODE_LENGTH
 

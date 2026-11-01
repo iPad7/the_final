@@ -16,7 +16,13 @@ from sqlalchemy.orm import Session
 from fulfill.modules.allocation.domain import AllocationRunCommand
 from fulfill.modules.inventory.domain import QC_FAIL, QC_PASS, QcCommand, ReceiptCommand
 from fulfill.modules.inventory.queries import find_sku_ids_by_codes
-from fulfill.modules.requests.domain import IntakeCommand, Recipient, RequestedLine
+from fulfill.modules.requests.domain import (
+    IntakeCommand,
+    Recipient,
+    RequestedLine,
+    ReviseCommand,
+    ReviseLine,
+)
 from fulfill.shared.db import unit_of_work
 from fulfill.workflows.accept_request import IntakeOutcome, accept_request
 from fulfill.workflows.allocate import (
@@ -26,6 +32,7 @@ from fulfill.workflows.allocate import (
     summarize_request_allocation,
 )
 from fulfill.workflows.receiving import ReceivingOutcome, record_qc_decision, record_receipt
+from fulfill.workflows.revise_demand import RevisionResult, revise_demand
 from tests.seed_data import SELLER_A, SKU_P
 
 NOW = datetime(2026, 10, 30, 9, tzinfo=UTC)
@@ -134,3 +141,53 @@ def allocation_summary_of(request_id: uuid.UUID) -> RequestAllocationSummary:
 def allocated_for(request_id: uuid.UUID) -> int:
     """요청 전체의 배정 수량. 라인이 하나인 테스트에서 쓴다."""
     return sum(line.allocated_quantity for line in allocation_summary_of(request_id).lines)
+
+
+def revise_quantities(
+    external_id: str,
+    quantities: dict[str, int],
+    seller_code: str = SELLER_A,
+    reason: str = "판매사 수량 조정 요청",
+) -> RevisionResult:
+    """요청의 SKU 수량을 바꾼다. 값은 변경 후 **총 수량**이다."""
+    with unit_of_work() as session:
+        return revise_demand(
+            session,
+            ReviseCommand(
+                seller_code=seller_code,
+                external_request_id=external_id,
+                lines=tuple(
+                    ReviseLine(sku_code=code, quantity=quantity)
+                    for code, quantity in quantities.items()
+                ),
+                revised_by="SELLER-A-STAFF-01",
+                reason=reason,
+                occurred_at=NOW,
+            ),
+        )
+
+
+def place_multi_line_request(
+    external_id: str, quantities: dict[str, int], seller_code: str = SELLER_A
+) -> uuid.UUID:
+    """여러 SKU를 담은 요청을 접수한다. 다품목 변경 검증에 쓴다."""
+    with unit_of_work() as session:
+        result = accept_request(
+            session,
+            IntakeCommand(
+                seller_code=seller_code,
+                external_request_id=external_id,
+                lines=tuple(
+                    RequestedLine(sku_code=code, quantity=quantity)
+                    for code, quantity in quantities.items()
+                ),
+                recipient=RECIPIENT,
+                initial_due_at=DUE,
+                desired_ship_date=None,
+                occurred_at=NOW,
+            ),
+            received_at=RECEIVED_AT,
+        )
+    assert result.outcome is IntakeOutcome.APPLIED
+    assert result.request_id is not None
+    return result.request_id

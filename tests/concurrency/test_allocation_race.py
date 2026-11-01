@@ -39,6 +39,7 @@ from tests.scenarios import (
     make_passed_stock,
     place_request,
     receive_stock,
+    revise_quantities,
     run_fifo,
     sku_id_of,
 )
@@ -279,3 +280,75 @@ def test_정렬하지_않고_잠그면_교착이_나타난다(
     ]
 
     assert sorted(run_together(tasks)) == ["deadlock", "ok"]
+
+
+def test_수량_감소와_배정이_동시에_일어나도_판정이_일관된다(seeded_database: str) -> None:
+    """TC-05: 정당한 수량 감소와 같은 판매사·SKU의 재배정이 경합한다.
+
+    적격 재고 5개가 FR-1에 2개, FR-2에 3개 배정되고 FR-3은 아무것도 받지 못한
+    상태에서, FR-1을 1개로 줄이는 명령과 배정 실행이 동시에 출발한다.
+
+    **최종 상태가 순서와 무관해야 한다.** 감량이 먼저면 풀린 1개를 그 자리에서
+    FR-3에 주고, 배정이 먼저면 줄 것이 없어 아무것도 하지 않은 뒤 감량이 FR-3에
+    준다. 어느 쪽이든 FR-1 1 · FR-2 3 · FR-3 1이다. 결과가 갈리면 TX-03의
+    "순서 경합은 일관된 판정"이 깨진 것이다.
+
+    FR-2의 3개가 그대로인 것이 NBR-04의 금지 조항이다.
+    """
+    first = place_request("EXT-1", 2)
+    second = place_request("EXT-2", 3)
+    third = place_request("EXT-3", 2)
+    make_passed_stock(5)
+    run_fifo()
+    assert (allocated_for(first), allocated_for(second), allocated_for(third)) == (2, 3, 0)
+
+    def shrink() -> str:
+        revise_quantities("EXT-1", {SKU_P: 1})
+        return "revised"
+
+    def allocate() -> str:
+        run_fifo()
+        return "allocated"
+
+    assert sorted(run_together([shrink, allocate])) == ["allocated", "revised"]
+
+    assert (allocated_for(first), allocated_for(second), allocated_for(third)) == (1, 3, 1)
+
+    with unit_of_work() as session:
+        reserved = session.execute(
+            text("SELECT coalesce(sum(allocated_quantity), 0) FROM stock_position")
+        ).scalar_one()
+        active = session.execute(
+            text("SELECT coalesce(sum(quantity - released_quantity), 0) FROM allocation")
+        ).scalar_one()
+    assert reserved == active == 5
+
+
+def test_같은_요청에_수량_변경이_동시에_오면_하나씩_적용된다(seeded_database: str) -> None:
+    """guard가 수량 변경도 직렬화한다.
+
+    두 변경이 끼어들면 둘 다 같은 현재 수량을 읽고 각자 증량 구간을 만든다.
+    그러면 라인 수량과 구간 수량의 합이 어긋난다 — 그 불변식으로 판정한다.
+
+    어느 쪽이 마지막인지는 정해지지 않으므로 최종 수량을 단정하지 않는다. 단정하는
+    것은 "둘 중 하나의 값이고, 구간 합이 그 값과 같다"는 것이다.
+    """
+    place_request("EXT-1", 2)
+
+    def revise_to(quantity: int) -> Callable[[], str]:
+        def run() -> str:
+            revise_quantities("EXT-1", {SKU_P: quantity})
+            return f"revised-{quantity}"
+
+        return run
+
+    run_together([revise_to(4), revise_to(6)])
+
+    with unit_of_work() as session:
+        line_quantity = session.execute(text("SELECT quantity FROM request_line")).scalar_one()
+        segment_total = session.execute(
+            text("SELECT coalesce(sum(quantity), 0) FROM demand_segment")
+        ).scalar_one()
+
+    assert line_quantity in (4, 6)
+    assert segment_total == line_quantity
