@@ -28,6 +28,7 @@ from fulfill.modules.inventory.models import (
 )
 from fulfill.modules.inventory.models import (
     InventoryHold,
+    LocationConfirmation,
     OwnershipReview,
     QcDecision,
     Receipt,
@@ -83,6 +84,14 @@ def test_입고_도메인_길이_상한이_컬럼_길이와_일치한다() -> No
     assert _varchar_length(StockPosition.__table__, "location_code") == MAX_LOCATION_CODE_LENGTH
     assert _varchar_length(InventoryHold.__table__, "held_by") == MAX_HELD_BY_LENGTH
     assert _varchar_length(InventoryHold.__table__, "lifted_by") == MAX_LIFTED_BY_LENGTH
+    # 확인 주체 상한은 실도착 확인자와 공유한다. 같은 종류의 값이므로 상수를 둘로
+    # 나누지 않았고, 그래서 두 테이블이 같은 길이를 유지해야 한다.
+    assert (
+        _varchar_length(LocationConfirmation.__table__, "confirmed_by") == MAX_CONFIRMED_BY_LENGTH
+    )
+    assert (
+        _varchar_length(LocationConfirmation.__table__, "location_code") == MAX_LOCATION_CODE_LENGTH
+    )
 
 
 def test_환경_구분_값이_모듈_사이에서_일치한다() -> None:

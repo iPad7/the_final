@@ -16,8 +16,11 @@ TABLES_IN_DELETE_ORDER = (
     "demand_segment",
     "request_line",
     "fulfillment_request",
-    # 입고 쪽도 자식부터. 네 테이블이 모두 receipt를 참조하고, receipt는
+    # 입고 쪽도 자식부터. 다섯 테이블이 모두 receipt를 참조하고, receipt는
     # inbound_advice와 sku를 참조한다.
+    #
+    # 위치 확인은 receipt와 stock_position 둘 다 참조하므로 버킷보다 먼저 지운다.
+    "location_confirmation",
     "stock_position",
     "qc_decision",
     "ownership_review",

@@ -14,6 +14,7 @@ from fulfill.modules.inventory.domain import (
     HOLD_REASON_OTHER,
     HOLD_REASON_QUALITY_SUSPECTED,
     MAX_HOLD_NOTE_LENGTH,
+    MAX_LOCATION_CODE_LENGTH,
     OWNERSHIP_CONFIRMED,
     OWNERSHIP_UNKNOWN,
     QC_FAIL,
@@ -21,12 +22,14 @@ from fulfill.modules.inventory.domain import (
     REVIEW_CONFIRMED,
     REVIEW_ESCALATED,
     REVIEW_STILL_UNKNOWN,
+    ConfirmLocationCommand,
     HoldCommand,
     LiftHoldCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
     ValidationProblem,
+    validate_confirm_location,
     validate_hold,
     validate_lift_hold,
     validate_ownership_review,
@@ -314,3 +317,43 @@ def test_해제_주체가_필요하다() -> None:
 
 def test_해제_시각에_시간대가_있어야_한다() -> None:
     assert _fields(validate_lift_hold(replace(LIFTED, occurred_at=NAIVE))) == {"occurred_at"}
+
+
+# 임시 구역에 있던 합격품의 피킹 위치를 확인한 보고. AC-09의 합격품 100개 상황이다.
+LOCATED = ConfirmLocationCommand(
+    receipt_id=RECEIPT_ID,
+    location_code="A-01",
+    confirmed_by="WH-STAFF-02",
+    occurred_at=NOW,
+)
+
+
+def test_피킹_위치_확인은_유효하다() -> None:
+    assert validate_confirm_location(LOCATED) == ()
+
+
+def test_빈_피킹_위치는_거절한다() -> None:
+    # NULL이 곧 미확정이므로 빈 값으로 확인하면 "확인했는데 미확정"이 된다. 공백만
+    # 있는 입력도 같다 — 다듬고 나면 비어 있다.
+    assert _fields(validate_confirm_location(replace(LOCATED, location_code=""))) == {
+        "location_code"
+    }
+    assert _fields(validate_confirm_location(replace(LOCATED, location_code="   "))) == {
+        "location_code"
+    }
+
+
+def test_위치_확인_주체가_필요하다() -> None:
+    # AC-09가 요구하는 "실제 피킹 위치 확인 사실"의 주체다.
+    assert _fields(validate_confirm_location(replace(LOCATED, confirmed_by=""))) == {"confirmed_by"}
+
+
+def test_위치_확인_시각에_시간대가_있어야_한다() -> None:
+    assert _fields(validate_confirm_location(replace(LOCATED, occurred_at=NAIVE))) == {
+        "occurred_at"
+    }
+
+
+def test_피킹_위치는_길이_상한을_넘지_않는다() -> None:
+    too_long = replace(LOCATED, location_code="A" * (MAX_LOCATION_CODE_LENGTH + 1))
+    assert _fields(validate_confirm_location(too_long)) == {"location_code"}

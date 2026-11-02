@@ -18,6 +18,7 @@ from fulfill.modules.inventory.domain import (
     HOLD_REASON_COUNT_DISCREPANCY,
     QC_FAIL,
     QC_PASS,
+    ConfirmLocationCommand,
     HoldCommand,
     LiftHoldCommand,
     QcCommand,
@@ -39,6 +40,7 @@ from fulfill.workflows.allocate import (
     run_allocation,
     summarize_request_allocation,
 )
+from fulfill.workflows.confirm_location import LocationResult, confirm_picking_location
 from fulfill.workflows.hold import HoldResult, lift_inventory_hold, place_inventory_hold
 from fulfill.workflows.receiving import ReceivingOutcome, record_qc_decision, record_receipt
 from fulfill.workflows.revise_demand import RevisionResult, revise_demand
@@ -217,6 +219,20 @@ def place_hold(
                 held_by="WH-MANAGER-01",
                 occurred_at=NOW,
                 note=note,
+            ),
+        )
+
+
+def confirm_location(receipt_id: uuid.UUID, location_code: str = "A-01") -> LocationResult:
+    """입고묶음의 합격 재고에 피킹 위치를 확정한다."""
+    with unit_of_work() as session:
+        return confirm_picking_location(
+            session,
+            ConfirmLocationCommand(
+                receipt_id=receipt_id,
+                location_code=location_code,
+                confirmed_by="WH-STAFF-02",
+                occurred_at=NOW,
             ),
         )
 

@@ -20,6 +20,7 @@ from fulfill.modules.inventory.domain import (
     QC_STATE_PENDING,
     REVIEW_CONFIRMED,
     AdviceCommand,
+    ConfirmLocationCommand,
     HoldCommand,
     LiftHoldCommand,
     OwnershipReviewCommand,
@@ -29,6 +30,7 @@ from fulfill.modules.inventory.domain import (
 from fulfill.modules.inventory.models import (
     InboundAdvice,
     InventoryHold,
+    LocationConfirmation,
     OwnershipReview,
     QcDecision,
     Receipt,
@@ -504,3 +506,88 @@ def lift_hold(session: Session, command: LiftHoldCommand) -> uuid.UUID | None:
         )
         .returning(InventoryHold.id)
     ).scalar_one_or_none()
+
+
+@dataclass(frozen=True)
+class PassedBucket:
+    """입고묶음의 합격 버킷 하나와 그 위치·수량."""
+
+    bucket_id: uuid.UUID
+    sku_id: uuid.UUID
+    # NULL이면 피킹 위치 미확정이다. AC-09의 출발 상태다.
+    location_code: str | None
+    quantity: int
+
+
+def lock_passed_buckets(session: Session, receipt_id: uuid.UUID) -> tuple[PassedBucket, ...]:
+    """입고묶음의 합격 버킷을 잠그고 돌려준다 (AC-09).
+
+    이 입고묶음의 **모든** 합격 버킷을 돌려주는 것이 요점이다. 조정 계층이 추가
+    질의 없이 "요청한 위치에 이미 다른 합격 버킷이 있는가"를 판정할 수 있다. 한
+    입고묶음은 품목 하나이므로 uq_stock_bucket의 네 축 중 위치만 비교하면 된다.
+
+    부분 검수 때문에 합격 버킷이 둘 이상일 수 있다. 570개를 확인해 A-01로 확정한
+    뒤 나머지 20개가 합격하면, 그 20개는 아직 임시 구역에 있으므로 위치 NULL인
+    합격 버킷으로 새로 생긴다. 합격 판정이 실물을 옮기지 않기 때문이다.
+
+    잠그는 이유는 위치를 읽은 뒤 갱신하기까지의 틈을 막기 위해서다. 그 사이에
+    부분 검수가 같은 버킷에 수량을 더하거나 다른 확인이 끼어들 수 있다.
+    """
+    rows = session.execute(
+        select(
+            StockPosition.id,
+            StockPosition.sku_id,
+            StockPosition.location_code,
+            StockPosition.quantity,
+        )
+        .where(
+            StockPosition.receipt_id == receipt_id,
+            StockPosition.qc_state == QC_STATE_PASSED,
+            StockPosition.quantity > 0,
+        )
+        .order_by(StockPosition.location_code.nulls_first(), StockPosition.id)
+        .with_for_update()
+    ).all()
+    return tuple(
+        PassedBucket(bucket_id=row[0], sku_id=row[1], location_code=row[2], quantity=row[3])
+        for row in rows
+    )
+
+
+def confirm_bucket_location(
+    session: Session, bucket: PassedBucket, command: ConfirmLocationCommand
+) -> None:
+    """버킷의 피킹 위치를 확정하고 확인 사건을 쌓는다 (AC-09).
+
+    위치를 **제자리 갱신**한다. 24-2의 검수처럼 버킷 사이로 수량을 옮기지 않는
+    이유는 두 가지다.
+
+    첫째, 배정이 이미 붙어 있다. NBR-12가 "위치 미확정이어도 배정 가능"을
+    요구하므로 배정이 위치 확인보다 먼저 일어나는 것이 정상 순서이고, 원래 버킷의
+    quantity를 줄이면 ck_stock_allocated_within_quantity가 커밋을 거부한다.
+
+    둘째, 물리적으로 일어난 일이 "같은 물건의 자리가 알려진 것"이다. 수량 이동은
+    물건이 둘로 갈라졌다는 뜻이지만 여기서는 갈라지지 않는다.
+
+    제자리 갱신이라 버킷 id가 변하지 않으므로 allocation이 가리키는 대상도 그대로
+    유효하다. 배정을 재지정하는 코드가 필요 없는 것이 이 선택의 이점이다.
+
+    요청한 위치에 같은 입고묶음의 다른 합격 버킷이 있으면 uq_stock_bucket이 거부
+    한다. 호출 전에 조정 계층이 그 경우를 판정하므로 여기 도달하지 않는다.
+    """
+    location_code = normalize_text(command.location_code)
+    session.execute(
+        update(StockPosition)
+        .where(StockPosition.id == bucket.bucket_id)
+        .values(location_code=location_code)
+    )
+    session.add(
+        LocationConfirmation(
+            receipt_id=command.receipt_id,
+            stock_position_id=bucket.bucket_id,
+            previous_location_code=bucket.location_code,
+            location_code=location_code,
+            confirmed_by=normalize_text(command.confirmed_by),
+            occurred_at=command.occurred_at,
+        )
+    )

@@ -339,6 +339,57 @@ class InventoryHold(Base):
     lifted_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class LocationConfirmation(Base):
+    """합격 재고의 실제 피킹 위치를 확인한 사건 하나 (AC-09).
+
+    버킷의 location_code는 제자리 갱신되므로 확인 전 값이 남지 않는다. 그래서
+    previous_location_code를 여기 적는다. AC-09가 업무 근거로 요구하는 것이
+    "임시 보관 위치"와 "실제 피킹 위치 확인 사실" 둘이므로, 확정된 위치만 남기면
+    절반만 보존된다.
+
+    추가만 하고 수정하지 않는다. 같은 재고가 나중에 다른 자리로 옮겨지면 이 행을
+    고치는 대신 새 사건을 쌓는다(AC-36).
+
+    대상이 버킷이 아니라 입고묶음인 것은 qc_decision과 같은 이유다. 버킷은 이
+    사건을 적용한 결과로 바뀌는 파생 상태이므로, 사실이 파생물을 가리키면 방향이
+    뒤집힌다. 다만 어느 버킷이 바뀌었는지는 추적해야 하므로 stock_position_id를
+    함께 적는다 — 제자리 갱신이라 버킷 id가 변하지 않는 덕분에 이 참조가 계속
+    유효하다.
+    """
+
+    __tablename__ = "location_confirmation"
+    __table_args__ = (
+        # 확인 전과 후가 같으면 확인이 아니다. 위치가 이미 그 값이었다는 뜻이고,
+        # 조정 계층이 그 경우를 변화 없음으로 판정하므로 여기 도달하지 않는다.
+        CheckConstraint(
+            "previous_location_code IS NULL OR previous_location_code <> location_code",
+            name="ck_location_confirmation_changes_location",
+        ),
+        # 사람이 실물 위치를 확인했다는 불변 사실이므로 환경을 DB가 강제한다
+        # (ADR23-08).
+        CheckConstraint(
+            f"environment_class IN ('{ENVIRONMENT_SIMULATION}')",
+            name="ck_location_confirmation_environment_class",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    receipt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("receipt.id"))
+    stock_position_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stock_position.id"))
+    # 확인 전 위치. NULL이면 임시 구역에 있었고 피킹 위치가 미확정이었다는 뜻이며,
+    # AC-09의 출발 상태가 바로 이것이다.
+    previous_location_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    location_code: Mapped[str] = mapped_column(String(100))
+    confirmed_by: Mapped[str] = mapped_column(String(100))
+    environment_class: Mapped[str] = mapped_column(String(20), default=ENVIRONMENT_SIMULATION)
+
+    # 실제로 확인한 시각과 기록된 시각을 구분한다.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class StockPosition(Base):
     """같은 조건의 실물을 한 행으로 모은 재고 버킷.
 

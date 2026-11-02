@@ -17,6 +17,7 @@ from fulfill.modules.inventory.domain import (
     QC_STATE_PASSED,
     QC_STATE_PENDING,
     AdviceCommand,
+    ConfirmLocationCommand,
     HoldCommand,
     LiftHoldCommand,
     OwnershipReviewCommand,
@@ -33,6 +34,10 @@ from fulfill.modules.inventory.queries import (
 )
 from fulfill.shared.db import unit_of_work
 from fulfill.shared.http import to_camel_path
+from fulfill.workflows.confirm_location import (
+    LocationOutcome,
+    confirm_picking_location,
+)
 from fulfill.workflows.hold import (
     HoldOutcome,
     HoldResult,
@@ -493,3 +498,66 @@ def read_hold(receipt_id: ReceiptId) -> ActiveHoldResponse:
     if hold is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="활성 보류가 없습니다")
     return _to_active_hold_response(hold)
+
+
+# 보류와 같은 규약이다. 같은 위치로 올라온 재확인은 200이며, 쓰는 쪽이 재시도를
+# 안전하게 할 수 있어야 한다.
+_STATUS_BY_LOCATION_OUTCOME = {
+    LocationOutcome.APPLIED: status.HTTP_201_CREATED,
+    LocationOutcome.UNCHANGED: status.HTTP_200_OK,
+    LocationOutcome.REJECTED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+}
+
+
+class LocationConfirmationPayload(_Payload):
+    """합격 재고의 실제 피킹 위치를 확인했다는 보고.
+
+    locationCode를 비울 수 없다. NULL이 곧 미확정이므로 빈 값으로 확인하는 것은
+    "확인했는데 미확정"이라는 모순이다.
+    """
+
+    location_code: str
+    confirmed_by: str
+    occurred_at: datetime
+
+
+class LocationConfirmationResponse(_Payload):
+    """위치 확인 명령의 판정 응답."""
+
+    outcome: LocationOutcome
+    bucket_id: uuid.UUID | None = None
+    confirmed_quantity: int = 0
+    problems: list[ProblemPayload] = []
+
+
+@router.post("/receipts/{receiptId}/location-confirmations")
+def accept_location_confirmation(
+    receipt_id: ReceiptId, payload: LocationConfirmationPayload, response: Response
+) -> LocationConfirmationResponse:
+    """피킹 위치 확인을 접수한다 (AC-09).
+
+    자원 이름이 설계를 말해 준다. PATCH /stock-positions/{id}로 위치를 갱신하는
+    모양이면 확인 사건이 남지 않아 AC-09가 요구하는 "실제 피킹 위치 확인 사실"을
+    담을 수 없다. 귀속 확인과 같은 판단이다.
+    """
+    with unit_of_work() as session:
+        result = confirm_picking_location(
+            session,
+            ConfirmLocationCommand(
+                receipt_id=receipt_id,
+                location_code=payload.location_code,
+                confirmed_by=payload.confirmed_by,
+                occurred_at=payload.occurred_at,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_LOCATION_OUTCOME[result.outcome]
+    return LocationConfirmationResponse(
+        outcome=result.outcome,
+        bucket_id=result.bucket_id,
+        confirmed_quantity=result.confirmed_quantity,
+        problems=[
+            ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
+            for problem in result.problems
+        ],
+    )

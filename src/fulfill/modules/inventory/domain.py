@@ -392,3 +392,50 @@ def validate_lift_hold(command: LiftHoldCommand) -> tuple[ValidationProblem, ...
         problems.append(ValidationProblem("occurred_at", "시간대가 없는 해제 시각입니다"))
 
     return tuple(problems)
+
+
+@dataclass(frozen=True)
+class ConfirmLocationCommand:
+    """합격 재고의 실제 피킹 위치를 확인했다는 명령 (AC-09)."""
+
+    receipt_id: uuid.UUID
+    # 확인된 실제 피킹 위치. 비울 수 없다.
+    location_code: str
+    confirmed_by: str
+    occurred_at: datetime
+
+
+def validate_confirm_location(command: ConfirmLocationCommand) -> tuple[ValidationProblem, ...]:
+    """위치 확인 명령의 유효성을 판정한다 (AC-09).
+
+    위치 코드를 비울 수 없다. location_code의 NULL이 곧 "피킹 위치 미확정"이므로,
+    빈 값으로 확인하는 것은 "확인했는데 미확정"이라는 모순이고 AC-09가 금지한
+    "임시 구역 입고를 위치 확인 완료로 간주"와 같은 결과가 된다.
+
+    확인할 합격 재고가 있는지, 이미 다른 위치로 확인됐는지는 보지 않는다. 둘 다
+    조회이므로 조정 계층의 일이다.
+    """
+    problems: list[ValidationProblem] = []
+
+    location_code = normalize_text(command.location_code)
+    if not location_code:
+        problems.append(ValidationProblem("location_code", "피킹 위치가 비어 있습니다"))
+    elif len(location_code) > MAX_LOCATION_CODE_LENGTH:
+        problems.append(
+            ValidationProblem("location_code", f"{MAX_LOCATION_CODE_LENGTH}자를 넘습니다")
+        )
+
+    confirmed_by = normalize_text(command.confirmed_by)
+    if not confirmed_by:
+        problems.append(ValidationProblem("confirmed_by", "확인 주체가 비어 있습니다"))
+    elif len(confirmed_by) > MAX_CONFIRMED_BY_LENGTH:
+        problems.append(
+            ValidationProblem("confirmed_by", f"{MAX_CONFIRMED_BY_LENGTH}자를 넘습니다")
+        )
+
+    # AC-09는 "실제 피킹 위치 확인 사실"을 업무 근거로 요구한다. 언제 확인했는지가
+    # 모호하면 그 사실이 기록으로 성립하지 않는다.
+    if command.occurred_at.tzinfo is None:
+        problems.append(ValidationProblem("occurred_at", "시간대가 없는 확인 시각입니다"))
+
+    return tuple(problems)
