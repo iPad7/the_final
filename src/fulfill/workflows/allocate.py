@@ -227,8 +227,9 @@ class RequestAllocationSummary:
         """모든 라인이 전량 배정됐는가.
 
         **피킹 가능 여부가 아니다.** AC-05·AC-09의 관문은 전량 배정에 더해 위치
-        확인과 HOLD 없음을 요구하며 그 판정은 24-4의 일이다. 이 값을 피킹 허가로
-        읽으면 "임시 구역 입고를 위치 확인 완료로 간주"하는 AC-09 위반이 된다.
+        확인과 HOLD 없음을 요구하며, 그 판정은 `picking_readiness`가 한다. 이 값을
+        피킹 허가로 읽으면 "임시 구역 입고를 위치 확인 완료로 간주"하는 AC-09
+        위반이 된다.
         """
         return all(line.unallocated_quantity == 0 for line in self.lines)
 

@@ -10,6 +10,11 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from fulfill.modules.inventory.domain import (
+    HOLD_REASON_COUNT_DISCREPANCY,
+    HOLD_REASON_OTHER,
+    HOLD_REASON_QUALITY_SUSPECTED,
+    MAX_HOLD_NOTE_LENGTH,
+    MAX_LOCATION_CODE_LENGTH,
     OWNERSHIP_CONFIRMED,
     OWNERSHIP_UNKNOWN,
     QC_FAIL,
@@ -17,10 +22,16 @@ from fulfill.modules.inventory.domain import (
     REVIEW_CONFIRMED,
     REVIEW_ESCALATED,
     REVIEW_STILL_UNKNOWN,
+    ConfirmLocationCommand,
+    HoldCommand,
+    LiftHoldCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
     ValidationProblem,
+    validate_confirm_location,
+    validate_hold,
+    validate_lift_hold,
     validate_ownership_review,
     validate_qc_decision,
     validate_receipt,
@@ -223,3 +234,126 @@ def test_확인_기한에_시간대가_있어야_한다() -> None:
     assert _fields(
         validate_ownership_review(replace(UNRESOLVED, due_at=NAIVE), OWNERSHIP_UNKNOWN)
     ) == {"due_at"}
+
+
+# 수량 차이 의심으로 걸린 보류. AC-10의 기록 50 / 실물 47 상황이다.
+HELD = HoldCommand(
+    receipt_id=RECEIPT_ID,
+    reason=HOLD_REASON_COUNT_DISCREPANCY,
+    held_by="WH-MANAGER-01",
+    occurred_at=NOW,
+    note="기록 50 대비 실물 47 확인",
+)
+
+
+def test_수량_차이_의심_보류는_유효하다() -> None:
+    # AC-10의 정상 경로. 조사 착수 자체는 손실 확정이 아니다.
+    assert validate_hold(HELD) == ()
+
+
+def test_근거가_없어도_분류된_사유는_유효하다() -> None:
+    # 사유 어휘가 이미 무엇을 의심하는지 말해 준다. 품질 의심에 추가 설명을
+    # 강제하면 담당자가 형식만 채우게 된다.
+    passing = replace(HELD, reason=HOLD_REASON_QUALITY_SUSPECTED, note=None)
+    assert validate_hold(passing) == ()
+
+
+def test_기타_사유에는_조사_근거가_필요하다() -> None:
+    # 분류되지 않는 사유를 근거 없이 받으면 "관리자가 판단했다"만 남고 무엇을 보고
+    # 재고를 묶었는지가 사라진다. AC-10은 확인 자료를 요구한다.
+    assert _fields(validate_hold(replace(HELD, reason=HOLD_REASON_OTHER, note=None))) == {"note"}
+    assert _fields(validate_hold(replace(HELD, reason=HOLD_REASON_OTHER, note="   "))) == {"note"}
+
+
+def test_기타_사유에_근거가_있으면_유효하다() -> None:
+    other = replace(HELD, reason=HOLD_REASON_OTHER, note="판매사 요청으로 출고 중단")
+    assert validate_hold(other) == ()
+
+
+def test_허용되지_않는_보류_사유값은_거절한다() -> None:
+    # 자유 문자열을 받으면 사유별 집계가 불가능해지고 CHECK 제약과도 갈라진다.
+    assert _fields(validate_hold(replace(HELD, reason="SUSPECTED"))) == {"reason"}
+
+
+def test_보류_주체가_필요하다() -> None:
+    # AC-10이 요구하는 "관리자 확정"의 주체다. 누가 묶었는지 모르는 보류는 풀
+    # 권한도 판단할 수 없다.
+    assert _fields(validate_hold(replace(HELD, held_by="   "))) == {"held_by"}
+
+
+def test_보류_시각에_시간대가_있어야_한다() -> None:
+    # 실제 발생 시각을 기록 시각과 구분하려면 어느 시점인지가 확정돼야 한다.
+    assert _fields(validate_hold(replace(HELD, occurred_at=NAIVE))) == {"occurred_at"}
+
+
+def test_보류_근거는_길이_상한을_넘지_않는다() -> None:
+    too_long = replace(HELD, note="가" * (MAX_HOLD_NOTE_LENGTH + 1))
+    assert _fields(validate_hold(too_long)) == {"note"}
+
+
+# 조사를 마치고 푸는 해제. 무엇을 확인했는지가 근거로 남는다.
+LIFTED = LiftHoldCommand(
+    receipt_id=RECEIPT_ID,
+    lifted_by="WH-MANAGER-01",
+    occurred_at=NOW,
+    note="재실사 결과 기록과 실물이 일치",
+)
+
+
+def test_근거가_있는_해제는_유효하다() -> None:
+    assert validate_lift_hold(LIFTED) == ()
+
+
+def test_해제에는_근거가_항상_필요하다() -> None:
+    # 설정과 다르다. 설정은 사유 어휘가 무엇을 의심하는지 말해 주지만, 해제는
+    # "조사가 끝났다" 한 종류이므로 어휘가 아무것도 설명하지 못한다. 근거 없는
+    # 해제를 받으면 조사 없이 재고를 되살리는 경로가 열린다(NBR-14).
+    assert _fields(validate_lift_hold(replace(LIFTED, note="   "))) == {"note"}
+
+
+def test_해제_주체가_필요하다() -> None:
+    assert _fields(validate_lift_hold(replace(LIFTED, lifted_by=""))) == {"lifted_by"}
+
+
+def test_해제_시각에_시간대가_있어야_한다() -> None:
+    assert _fields(validate_lift_hold(replace(LIFTED, occurred_at=NAIVE))) == {"occurred_at"}
+
+
+# 임시 구역에 있던 합격품의 피킹 위치를 확인한 보고. AC-09의 합격품 100개 상황이다.
+LOCATED = ConfirmLocationCommand(
+    receipt_id=RECEIPT_ID,
+    location_code="A-01",
+    confirmed_by="WH-STAFF-02",
+    occurred_at=NOW,
+)
+
+
+def test_피킹_위치_확인은_유효하다() -> None:
+    assert validate_confirm_location(LOCATED) == ()
+
+
+def test_빈_피킹_위치는_거절한다() -> None:
+    # NULL이 곧 미확정이므로 빈 값으로 확인하면 "확인했는데 미확정"이 된다. 공백만
+    # 있는 입력도 같다 — 다듬고 나면 비어 있다.
+    assert _fields(validate_confirm_location(replace(LOCATED, location_code=""))) == {
+        "location_code"
+    }
+    assert _fields(validate_confirm_location(replace(LOCATED, location_code="   "))) == {
+        "location_code"
+    }
+
+
+def test_위치_확인_주체가_필요하다() -> None:
+    # AC-09가 요구하는 "실제 피킹 위치 확인 사실"의 주체다.
+    assert _fields(validate_confirm_location(replace(LOCATED, confirmed_by=""))) == {"confirmed_by"}
+
+
+def test_위치_확인_시각에_시간대가_있어야_한다() -> None:
+    assert _fields(validate_confirm_location(replace(LOCATED, occurred_at=NAIVE))) == {
+        "occurred_at"
+    }
+
+
+def test_피킹_위치는_길이_상한을_넘지_않는다() -> None:
+    too_long = replace(LOCATED, location_code="A" * (MAX_LOCATION_CODE_LENGTH + 1))
+    assert _fields(validate_confirm_location(too_long)) == {"location_code"}

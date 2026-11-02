@@ -21,6 +21,7 @@ from fulfill.workflows.allocate import (
     run_allocation,
     summarize_request_allocation,
 )
+from fulfill.workflows.picking_readiness import PickingBlocker, evaluate_picking_readiness
 
 
 class _Payload(BaseModel):
@@ -96,7 +97,8 @@ class RequestAllocationResponse(_Payload):
     """요청 하나의 SKU별 배정 현황 (AC-04)."""
 
     lines: list[LineAllocationResponse]
-    # 피킹 가능 여부가 아니다. 위치 확인과 HOLD 판정이 더 필요하며 24-4의 일이다.
+    # 피킹 가능 여부가 아니다. 위치 확인과 HOLD 판정이 더 필요하며, 그 관문은
+    # GET .../picking-readiness가 판정한다.
     all_lines_allocated: bool
 
 
@@ -173,3 +175,66 @@ def read_request_allocation(request_id: RequestId) -> RequestAllocationResponse:
     if summary is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "등록되지 않은 출고 요청입니다")
     return _to_summary_response(summary)
+
+
+class LineReadinessResponse(_Payload):
+    """라인 하나의 관문 판정과 근거 수량.
+
+    세 수량을 더해서 쓰면 안 된다. 위치 미확정이면서 보류인 재고는 두 수량에 모두
+    들어가므로, 각각 "이 사유에 걸린 양"으로만 읽는다.
+    """
+
+    sku_code: str
+    required_quantity: int
+    allocated_quantity: int
+    unallocated_quantity: int
+    location_unconfirmed_quantity: int
+    held_quantity: int
+    blockers: list[PickingBlocker]
+    ready: bool
+
+
+class PickingReadinessResponse(_Payload):
+    """요청의 피킹 준비 판정 (AC-05, AC-09).
+
+    `ready`가 참이어도 작업이 시작되지는 않는다. 작업 수락·수집 실행은 AC-13~16의
+    일이고 24단계 범위 밖이다.
+    """
+
+    request_id: uuid.UUID
+    ready: bool
+    blockers: list[PickingBlocker]
+    lines: list[LineReadinessResponse]
+
+
+@router.get("/fulfillment-requests/{requestId}/picking-readiness")
+def read_picking_readiness(request_id: RequestId) -> PickingReadinessResponse:
+    """요청이 정상 피킹에 착수할 수 있는지 판정한다 (AC-05, AC-09).
+
+    `GET .../allocations` 옆에 두는 이유가 있다. 그 응답의 all_lines_allocated는
+    전량 배정만 말하고 피킹 허가가 아니라고 주석에 적혀 있다. 실제 허가 판정을
+    같은 자원 아래 두면 쓰는 쪽이 둘을 혼동하기 어렵다.
+    """
+    with unit_of_work() as session:
+        readiness = evaluate_picking_readiness(session, request_id)
+
+    if readiness is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "등록되지 않은 출고 요청입니다")
+    return PickingReadinessResponse(
+        request_id=readiness.request_id,
+        ready=readiness.ready,
+        blockers=list(readiness.blockers),
+        lines=[
+            LineReadinessResponse(
+                sku_code=line.sku_code,
+                required_quantity=line.required_quantity,
+                allocated_quantity=line.allocated_quantity,
+                unallocated_quantity=line.unallocated_quantity,
+                location_unconfirmed_quantity=line.location_unconfirmed_quantity,
+                held_quantity=line.held_quantity,
+                blockers=list(line.blockers),
+                ready=line.ready,
+            )
+            for line in readiness.lines
+        ],
+    )

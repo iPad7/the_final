@@ -17,18 +17,33 @@ from fulfill.modules.inventory.domain import (
     QC_STATE_PASSED,
     QC_STATE_PENDING,
     AdviceCommand,
+    ConfirmLocationCommand,
+    HoldCommand,
+    LiftHoldCommand,
     OwnershipReviewCommand,
     QcCommand,
     ReceiptCommand,
 )
 from fulfill.modules.inventory.queries import (
+    ActiveHold,
     AdviceSummary,
     ReceiptSummary,
+    find_active_hold,
     summarize_advice,
     summarize_receipt,
 )
 from fulfill.shared.db import unit_of_work
 from fulfill.shared.http import to_camel_path
+from fulfill.workflows.confirm_location import (
+    LocationOutcome,
+    confirm_picking_location,
+)
+from fulfill.workflows.hold import (
+    HoldOutcome,
+    HoldResult,
+    lift_inventory_hold,
+    place_inventory_hold,
+)
 from fulfill.workflows.receiving import (
     ReceivingOutcome,
     ReceivingResult,
@@ -343,3 +358,206 @@ def accept_ownership_review(
 
     response.status_code = _STATUS_BY_OUTCOME[result.outcome]
     return _to_response(result)
+
+
+# UNCHANGED에 200을 쓴다. 이미 보류 중인 재고에 보류를 거는 것은 새로 만든 것도
+# (201) 업무상 받을 수 없는 것도(422) 아니라 이미 그 상태라는 뜻이다. 24-1의
+# 동일 요청 재전달과 같은 자리이며 24-3의 수량 변경도 같은 규약을 쓴다.
+_STATUS_BY_HOLD_OUTCOME = {
+    HoldOutcome.APPLIED: status.HTTP_201_CREATED,
+    HoldOutcome.UNCHANGED: status.HTTP_200_OK,
+    HoldOutcome.REJECTED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+}
+
+
+class HoldResponse(_Payload):
+    """보류 설정·해제 명령의 판정 응답."""
+
+    outcome: HoldOutcome
+    hold_id: uuid.UUID | None = None
+    problems: list[ProblemPayload] = []
+
+
+def _to_hold_response(result: HoldResult) -> HoldResponse:
+    """조정 계층의 보류 판정을 응답 DTO로 옮긴다."""
+    return HoldResponse(
+        outcome=result.outcome,
+        hold_id=result.hold_id,
+        problems=[
+            ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
+            for problem in result.problems
+        ],
+    )
+
+
+class HoldPayload(_Payload):
+    """입고묶음에 사용 보류를 거는 명령.
+
+    note는 OTHER 사유에서 필수다. 분류되지 않는 사유를 근거 없이 받으면 무엇을
+    보고 재고를 묶었는지가 사라지고 AC-10의 확인 자료 요구를 만족하지 못한다.
+    """
+
+    reason: str
+    held_by: str
+    occurred_at: datetime
+    note: str | None = None
+
+
+@router.post("/receipts/{receiptId}/holds")
+def accept_hold(receipt_id: ReceiptId, payload: HoldPayload, response: Response) -> HoldResponse:
+    """사용 보류를 접수한다 (AC-04, AC-10).
+
+    입고묶음의 하위 자원인 이유는 보류의 범위 단위가 입고묶음이기 때문이다. SKU
+    단위 입구로 두면 "영향 가능한 재고만" 묶으라는 NBR-14를 넘어 같은 SKU의 무관한
+    입고묶음까지 함께 막힌다 — AC-10이 금지한 무관 재고 30개의 자동 차단이다.
+    """
+    with unit_of_work() as session:
+        result = place_inventory_hold(
+            session,
+            HoldCommand(
+                receipt_id=receipt_id,
+                reason=payload.reason,
+                held_by=payload.held_by,
+                occurred_at=payload.occurred_at,
+                note=payload.note,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_HOLD_OUTCOME[result.outcome]
+    return _to_hold_response(result)
+
+
+class HoldLiftPayload(_Payload):
+    """사용 보류를 푸는 명령.
+
+    note가 필수다. 근거 없는 해제를 받으면 조사 없이 재고를 되살리는 경로가
+    생기고, 해제는 재배정 자격을 다시 여는 행위다(NBR-14).
+    """
+
+    lifted_by: str
+    occurred_at: datetime
+    note: str
+
+
+@router.post("/receipts/{receiptId}/hold-lifts")
+def accept_hold_lift(
+    receipt_id: ReceiptId, payload: HoldLiftPayload, response: Response
+) -> HoldResponse:
+    """사용 보류 해제를 접수한다 (AC-10).
+
+    DELETE가 아닌 이유는 귀속 확인 시도와 같다. 해제는 자원이 사라지는 일이 아니라
+    주체·시각·근거를 가진 새 사실이며, 과거에 보류가 걸려 있었다는 사실은 남는다
+    (AC-36).
+    """
+    with unit_of_work() as session:
+        result = lift_inventory_hold(
+            session,
+            LiftHoldCommand(
+                receipt_id=receipt_id,
+                lifted_by=payload.lifted_by,
+                occurred_at=payload.occurred_at,
+                note=payload.note,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_HOLD_OUTCOME[result.outcome]
+    return _to_hold_response(result)
+
+
+class ActiveHoldResponse(_Payload):
+    """활성 사용 보류의 업무 근거 (AC-10)."""
+
+    hold_id: uuid.UUID
+    reason: str
+    held_by: str
+    occurred_at: datetime
+    note: str | None = None
+
+
+def _to_active_hold_response(hold: ActiveHold) -> ActiveHoldResponse:
+    """조회 결과를 응답 DTO로 옮긴다."""
+    return ActiveHoldResponse(
+        hold_id=hold.hold_id,
+        reason=hold.reason,
+        held_by=hold.held_by,
+        occurred_at=hold.occurred_at,
+        note=hold.note,
+    )
+
+
+@router.get("/receipts/{receiptId}/hold")
+def read_hold(receipt_id: ReceiptId) -> ActiveHoldResponse:
+    """입고묶음의 활성 보류를 돌려준다 (AC-10).
+
+    보류가 없으면 404다. "보류가 없다"를 빈 몸체 200으로 답하면 쓰는 쪽이 매번
+    필드 유무를 확인해야 하고, 조회 실패와 구별되지 않는다.
+    """
+    with unit_of_work() as session:
+        hold = find_active_hold(session, receipt_id)
+
+    if hold is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="활성 보류가 없습니다")
+    return _to_active_hold_response(hold)
+
+
+# 보류와 같은 규약이다. 같은 위치로 올라온 재확인은 200이며, 쓰는 쪽이 재시도를
+# 안전하게 할 수 있어야 한다.
+_STATUS_BY_LOCATION_OUTCOME = {
+    LocationOutcome.APPLIED: status.HTTP_201_CREATED,
+    LocationOutcome.UNCHANGED: status.HTTP_200_OK,
+    LocationOutcome.REJECTED: status.HTTP_422_UNPROCESSABLE_CONTENT,
+}
+
+
+class LocationConfirmationPayload(_Payload):
+    """합격 재고의 실제 피킹 위치를 확인했다는 보고.
+
+    locationCode를 비울 수 없다. NULL이 곧 미확정이므로 빈 값으로 확인하는 것은
+    "확인했는데 미확정"이라는 모순이다.
+    """
+
+    location_code: str
+    confirmed_by: str
+    occurred_at: datetime
+
+
+class LocationConfirmationResponse(_Payload):
+    """위치 확인 명령의 판정 응답."""
+
+    outcome: LocationOutcome
+    bucket_id: uuid.UUID | None = None
+    confirmed_quantity: int = 0
+    problems: list[ProblemPayload] = []
+
+
+@router.post("/receipts/{receiptId}/location-confirmations")
+def accept_location_confirmation(
+    receipt_id: ReceiptId, payload: LocationConfirmationPayload, response: Response
+) -> LocationConfirmationResponse:
+    """피킹 위치 확인을 접수한다 (AC-09).
+
+    자원 이름이 설계를 말해 준다. PATCH /stock-positions/{id}로 위치를 갱신하는
+    모양이면 확인 사건이 남지 않아 AC-09가 요구하는 "실제 피킹 위치 확인 사실"을
+    담을 수 없다. 귀속 확인과 같은 판단이다.
+    """
+    with unit_of_work() as session:
+        result = confirm_picking_location(
+            session,
+            ConfirmLocationCommand(
+                receipt_id=receipt_id,
+                location_code=payload.location_code,
+                confirmed_by=payload.confirmed_by,
+                occurred_at=payload.occurred_at,
+            ),
+        )
+
+    response.status_code = _STATUS_BY_LOCATION_OUTCOME[result.outcome]
+    return LocationConfirmationResponse(
+        outcome=result.outcome,
+        bucket_id=result.bucket_id,
+        confirmed_quantity=result.confirmed_quantity,
+        problems=[
+            ProblemPayload(field=to_camel_path(problem.field), reason=problem.reason)
+            for problem in result.problems
+        ],
+    )
