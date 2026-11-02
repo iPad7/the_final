@@ -115,6 +115,46 @@ def receipt_exists(session: Session, receipt_id: uuid.UUID) -> bool:
 
 
 @dataclass(frozen=True)
+class BucketPickability:
+    """버킷 하나에서 피킹 가능 여부를 가르는 두 사실 (AC-05, AC-09).
+
+    두 축이 독립이다. 위치가 확정돼도 보류일 수 있고 그 반대도 가능하므로, 하나로
+    합친 불리언을 돌려주면 담당자가 왜 막혔는지 알 수 없다. AC-05는 "작업 관문
+    판단"을 업무 근거로 요구한다.
+    """
+
+    # 실제 피킹 위치가 확인됐는가. NBR-12·AC-09의 관문이다.
+    location_confirmed: bool
+    # 이 버킷이 속한 입고묶음에 활성 사용 보류가 있는가. NBR-14의 관문이다.
+    held: bool
+
+
+def describe_bucket_pickability(
+    session: Session, bucket_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, BucketPickability]:
+    """버킷들의 피킹 가능 조건을 한 번의 질의로 읽는다 (AC-05, AC-09).
+
+    보류 판정에 `active_hold_exists`를 쓴다. 배정 잠금·가용량 조회와 같은 식이므로
+    세 입구의 보류 해석이 갈라지지 않는다.
+
+    위치는 "NULL이 아님"으로 판정한다. 24-2가 location_code의 NULL을 피킹 위치
+    미확정으로 둔 덕분에 추가 상태 없이 이 판정이 나온다. 임시 구역에 있다는 사실
+    자체를 위치 확인으로 간주하지 않는 것이 AC-09의 금지 조항이다.
+
+    없는 버킷 id는 결과에서 빠진다. 호출자가 그것을 알아차릴 수 있어야 하므로
+    조용히 기본값을 채우지 않는다.
+    """
+    rows = session.execute(
+        select(
+            StockPosition.id,
+            StockPosition.location_code.is_not(None),
+            active_hold_exists(StockPosition.receipt_id),
+        ).where(StockPosition.id.in_(list(bucket_ids)))
+    ).all()
+    return {row[0]: BucketPickability(location_confirmed=row[1], held=row[2]) for row in rows}
+
+
+@dataclass(frozen=True)
 class ActiveHold:
     """풀리지 않은 사용 보류 한 건의 업무 근거 (AC-10)."""
 
